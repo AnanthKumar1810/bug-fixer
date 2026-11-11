@@ -73,6 +73,66 @@ Get-Content .bug-fixer-data\repo-pilot\evaluation_set3_b_vs_c\results.json | Con
 
 ---
 
+## Project Directory Structure
+
+```text
+bug-fixer/
+│
+├── README.md                   # Project overview, quickstart & navigation
+├── SUBMISSION.md               # Final Hackathon submission brief & scorecard (98/100)
+├── DEMO.md                     # 3-minute judge demo runbook & reproduction steps
+├── pyproject.toml              # Build & package dependencies configuration
+├── .gitignore                  # Git ignore definitions
+│
+├── docs/                       # Permanent documentation & competition reports
+│   ├── SUBMISSION.md           # Submission brief & audit table
+│   ├── DEMO.md                 # Demo walkthrough
+│   └── ps05_final_submission_report.md # Full empirical evaluation report
+│
+├── bug_fixer/                  # Core Python package source code
+│   ├── __init__.py
+│   ├── cli.py                  # CLI entry point (verify, challenge, show, doctor)
+│   ├── state_machine.py        # Repair state machine & multi-attempt loop
+│   ├── verification.py         # SWE-bench Three-State Docker verification
+│   ├── retrieval.py            # AST dynamic traceback & callee localization
+│   ├── workspace.py            # Workspace sandbox & tolerant text edits
+│   ├── challenge.py            # Adversarial patch challenge gate
+│   ├── publication.py          # Git push & review handoff gate
+│   ├── models.py               # Data models & validation schemas
+│   ├── db.py                   # SQLite audit store
+│   ├── config.py               # Settings & path management
+│   └── docker_runner.py        # Isolated Docker container runner
+│
+├── tests/                      # Automated test suite (72 tests, 17 modules)
+│   ├── test_complete_pr_verification.py
+│   ├── test_cross_file_retrieval.py
+│   ├── test_verification_scenarios.py
+│   └── ...
+│
+├── benchmarks/                 # Evaluation suites & benchmark runners
+│   ├── repository_pilot.py     # Real OSS library benchmark (boltons & more-itertools)
+│   ├── run_retry_memory_comparison.py # Controlled retry evaluation (Config B vs C)
+│   └── run_fresh_pilot.py
+│
+├── fixtures/                   # Multi-file test repositories & fixtures
+│   ├── cross_file_repo/        # Caller-callee architecture
+│   ├── config_loader_repo/     # Config default fallback
+│   ├── math_clamp_repo/        # Boundary logic inversion
+│   └── eval_retry_memory/      # Template filter & counter service repos
+│
+├── validator/                  # Isolated Docker evaluation environment
+│   ├── Dockerfile              # Python 3.13 validator image definition
+│   └── validator.py
+│
+├── .bug-fixer-data/            # Runtime data, database & release artifacts (gitignored)
+│   ├── bug_fixer.db            # SQLite audit database
+│   └── release_artifacts/      # Pinned release packages for judge replay
+│
+└── agentforge/                 # Preserved legacy subproject
+```
+
+---
+
 ## Architecture & Safety Gates
 
 1. **Adversarial Patch Challenge Gate (`challenge.py`)**: Hard-blocks publication if a candidate patch is a superficial caller-only workaround that fails independent callee variations.
