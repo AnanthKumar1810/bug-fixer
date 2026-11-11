@@ -13,7 +13,7 @@ pip install -e .
 # 2. Check dependencies and runtime readiness
 python -m bug_fixer.cli doctor
 
-# 3. Run complete verification test suite (65 tests)
+# 3. Run complete verification test suite (72 tests)
 python -m pytest tests -q
 ```
 
