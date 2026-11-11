@@ -160,6 +160,7 @@ def pin_and_checkout_base(
         try:
             subprocess.run(["git", "init", "-q"], cwd=source_path, check=False)
             subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=source_path, check=False)
+            subprocess.run(["git", "config", "core.whitespace", "cr-at-eol"], cwd=source_path, check=False)
             subprocess.run(["git", "config", "user.name", "FixtureAuthor"], cwd=source_path, check=False)
             subprocess.run(["git", "config", "user.email", "fixture@bugfixer.local"], cwd=source_path, check=False)
             subprocess.run(["git", "add", "-A"], cwd=source_path, check=False)
@@ -184,6 +185,7 @@ def pin_and_checkout_base(
 
     subprocess.run(["git", "init", "-q"], cwd=target_workspace, check=False)
     subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=target_workspace, check=False)
+    subprocess.run(["git", "config", "core.whitespace", "cr-at-eol"], cwd=target_workspace, check=False)
     subprocess.run(["git", "config", "user.name", "BugFixerBot"], cwd=target_workspace, check=False)
     subprocess.run(["git", "config", "user.email", "bugfixer@local"], cwd=target_workspace, check=False)
     subprocess.run(["git", "add", "-A"], cwd=target_workspace, check=False)
@@ -201,3 +203,47 @@ def compute_test_hash(workspace_root: Path, test_path_or_nodeid: str) -> str:
         content = test_file.read_bytes().replace(b"\r\n", b"\n")
         return hashlib.sha256(content).hexdigest()
     return hashlib.sha256(test_path_or_nodeid.encode("utf-8")).hexdigest()
+
+
+def associate_live_issue(
+    run_rec: Any,
+    live_issue_url: str,
+    store: Any,
+    *,
+    api_token: str | None = None,
+) -> Any:
+    """
+    Associate a verified live GitHub issue with a run originally conducted under local rehearsal.
+    Preserves audit history by recording an 'issue_associated' audit event.
+    Rejects mismatched repositories, pull request URLs, or 404/invalid issues.
+    """
+    owner, repo, number = parse_issue_url(live_issue_url)
+    if owner.lower() != run_rec.repo_owner.lower() or repo.lower() != run_rec.repo_name.lower():
+        raise IntakeError(
+            f"Repository mismatch: run is for '{run_rec.repo_owner}/{run_rec.repo_name}', but issue is for '{owner}/{repo}'"
+        )
+    live_info = fetch_github_issue(owner, repo, number, api_token=api_token)
+
+    # Record association audit event before updating
+    store.record_event(
+        run_rec.run_id,
+        run_rec.stage.value if hasattr(run_rec.stage, "value") else str(run_rec.stage),
+        "issue_associated",
+        data={
+            "previous_provenance": run_rec.provenance,
+            "previous_issue_url": run_rec.issue_url,
+            "previous_issue_number": run_rec.issue_number,
+            "previous_issue_title": getattr(run_rec, "issue_title", None),
+            "live_issue_url": live_info.url,
+            "live_issue_number": live_info.number,
+            "live_issue_title": live_info.title,
+        },
+    )
+
+    run_rec.issue_url = live_info.url
+    run_rec.issue_number = live_info.number
+    run_rec.issue_title = live_info.title
+    run_rec.provenance = "live_github"
+    store.save_run(run_rec)
+    return run_rec
+

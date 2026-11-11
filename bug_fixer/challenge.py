@@ -80,6 +80,7 @@ def test_mutable_default_variations():
     negatives = [
         "cache = {}",
         "def get_empty(): return {}",
+        "def fetch(tags=()): return tags",
     ]
     for n in negatives:
         findings = heuristic_scan(n)

@@ -216,7 +216,20 @@ class Workspace:
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.is_symlink():
                 raise WorkspaceError("Writing through a symbolic link is not allowed")
-            target.write_text(content, encoding="utf-8", newline="\n")
+            # Preserve target file's existing newline convention if present
+            nl = "\n"
+            if target.is_file():
+                try:
+                    with open(target, "rb") as ef:
+                        chunk = ef.read(8192)
+                    if b"\r\n" in chunk:
+                        nl = "\r\n"
+                    elif b"\n" in chunk:
+                        nl = "\n"
+                except Exception:
+                    pass
+            normalized_content = content.replace("\r\n", "\n")
+            target.write_text(normalized_content, encoding="utf-8", newline=nl)
             norm_rel = relative_path.replace("\\", "/")
             self._changed_files.add(norm_rel)
             msg = f"Wrote {norm_rel} ({len(payload)} bytes)"

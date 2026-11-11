@@ -113,6 +113,7 @@ class RunRecord(BaseModel):
     run_id: str
     issue_url: str
     issue_number: int
+    issue_title: str | None = None
     repo_owner: str
     repo_name: str
     base_sha: str
@@ -126,6 +127,7 @@ class RunRecord(BaseModel):
     created_at: str
     updated_at: str
     provenance: str = "fixture"  # "fixture" or "live_github"
+    origin_provenance: str = "fixture"  # immutable initial origin ("fixture", "simulated_local")
     base_branch: str = "main"
     reviewer: str | None = None
     reviewer_status: str | None = None  # "requested", "failed", "not_requested"

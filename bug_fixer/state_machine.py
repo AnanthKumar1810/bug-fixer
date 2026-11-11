@@ -77,6 +77,7 @@ class BugFixerWorkflow:
             run_id=run_id,
             issue_url=issue_info.url,
             issue_number=issue_info.number,
+            issue_title=getattr(issue_info, "title", None),
             repo_owner=issue_info.owner,
             repo_name=issue_info.repo,
             base_sha="",
@@ -304,13 +305,17 @@ class BugFixerWorkflow:
                     )
                     break
 
-            # If failed, record contradicted prediction
+            # If failed, record contradicted prediction and rich attempt memory
             fail_notes = latest_cand_val.failing_assertions or [c.name for c in latest_cand_val.checks if not c.passed]
             earlier_attempts.append({
                 "attempt": attempt,
                 "changed_files": list(workspace.changed_files),
                 "status": "failed",
                 "failures": fail_notes,
+                "patch_diff": latest_patch.strip() if latest_patch else "",
+                "reproducer_outcome": latest_cand_val.reproducer_outcome,
+                "failing_output": latest_cand_val.checks[-1].output[-1000:] if latest_cand_val.checks else "",
+                "unresolved_question": f"Why did Attempt {attempt}'s edit fail? (Reproducer outcome: {latest_cand_val.reproducer_outcome})",
             })
             self.store.record_event(
                 run_id, RunState.REPAIRING.value, "repair_attempt_failed",

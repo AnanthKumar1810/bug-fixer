@@ -179,6 +179,7 @@ def main() -> None:
     pub_p = subparsers.add_parser("publish", help="Publish verified patch as draft PR")
     pub_p.add_argument("--run", required=True, help="Run ID to publish")
     pub_p.add_argument("--reviewer", default=None, help="GitHub username required to review PR")
+    pub_p.add_argument("--live-issue", default=None, help="Associate a verified live GitHub issue URL before publishing")
     pub_p.add_argument("--remote", default="origin", help="Git remote name or URL")
     pub_p.add_argument("--confirm-remote", action="store_true", help="Explicit confirmation to push to remote")
     pub_p.add_argument("--source", default=None, help="Source repository root (optional)")
@@ -190,10 +191,12 @@ def main() -> None:
     show_p.add_argument("--json", action="store_true", help="Output details as JSON")
 
     # verify
-    ver_p = subparsers.add_parser("verify", help="Replay independent clean checkout verification for a run")
-    ver_p.add_argument("--run", required=True, help="Run ID to verify")
+    ver_p = subparsers.add_parser("verify", help="Replay independent clean checkout verification for a run or complete PR artifact")
+    ver_p.add_argument("--run", default=None, help="Run ID to verify (optional if --release-dir given)")
+    ver_p.add_argument("--release-dir", default=None, help="Path to complete PR release artifact directory")
     ver_p.add_argument("--source", default=None, help="Source repository root (optional)")
     ver_p.add_argument("--runner", choices=["docker", "local"], default="docker", help="Execution runner")
+    ver_p.add_argument("--json", action="store_true", help="Output verification report as JSON")
 
     # challenge
     chal_p = subparsers.add_parser("challenge", help="Run generalization patch challenge across callers and input variations")
@@ -466,6 +469,43 @@ def main() -> None:
         sys.exit(0)
 
     elif args.command == "verify":
+        if getattr(args, "release_dir", None):
+            from bug_fixer.verification import verify_complete_pr_package
+            rel_path = Path(args.release_dir).resolve()
+            source_p = Path(args.source).resolve() if args.source else (settings.data_dir / "demo_repo" / "ml-code-review-assistant")
+            if not source_p.is_dir():
+                print(f"Error: Upstream repository not found at {source_p}. Specify with --source.")
+                sys.exit(1)
+            print(f"Executing Three-State Complete PR Docker Verification for: {rel_path}...")
+            ok, rep = verify_complete_pr_package(
+                rel_path,
+                source_p,
+                runner=args.runner,
+                image=settings.validator_image,
+            )
+            if getattr(args, "json", False):
+                print(json.dumps(rep, indent=2))
+                sys.exit(0 if ok else 1)
+
+            print("\n================ THREE-STATE COMPLETE PR VERIFICATION ================")
+            print(f"Release Artifacts:     {rel_path}")
+            print(f"Upstream Base SHA:     {rep.get('base_sha')}")
+            print(f"Validator Image:       {rep.get('validator_image')}")
+            print(f"State 1 (Clean Base):  {'[PASS]' if rep.get('state1_base_passed') else '[FAIL]'} ({rep.get('state1_test_count', 0)} maintained tests passed)")
+            print(f"State 2 (Test-Only):   {'[PASS] Defect Reproduced' if rep.get('state2_reproduced') else '[FAIL] Defect Not Reproduced'}")
+            if rep.get("state2_failing_assertions"):
+                print(f"  Failing Assertion:   {rep['state2_failing_assertions'][0]}")
+            print(f"State 3 (Full Patch):  {'[PASS]' if rep.get('state3_reproducer_passed') and rep.get('state3_suite_passed') else '[FAIL]'} ({rep.get('state3_test_count', 0)} tests passed)")
+            print(f"Reconstructed Tree:    {rep.get('actual_tree_id')}")
+            print(f"Candidate Tree Match:  {'[PASS] Matched' if rep.get('tree_match') else '[FAIL] Mismatch'}")
+            print(f"Complete Patch SHA256: {rep.get('complete_patch_hash')}")
+            print(f"Replay Verdict:        {'VERIFIED (Eligible for Review)' if ok else 'FAILED (' + rep.get('error', 'unknown error') + ')'}")
+            sys.exit(0 if ok else 1)
+
+        if not args.run:
+            print("Error: Either --run <RUN_ID> or --release-dir <PATH> must be specified.")
+            sys.exit(1)
+
         store = EvidenceStore(settings.data_dir / "bug_fixer.db", settings.data_dir / "artifacts")
         source_p = Path(args.source).resolve() if args.source else None
         print(f"Replaying independent verification for run: {args.run}...")
@@ -550,6 +590,17 @@ def main() -> None:
                 print(f"  - {r}")
             sys.exit(1)
 
+        # Optional association of verified live GitHub issue before publishing
+        if getattr(args, "live_issue", None):
+            from bug_fixer.intake import associate_live_issue
+            token = os.environ.get("GITHUB_TOKEN")
+            try:
+                run_rec = associate_live_issue(run_rec, args.live_issue, store, api_token=token)
+                print(f"Associated verified live GitHub issue #{run_rec.issue_number}: {run_rec.issue_title}")
+            except IntakeError as exc:
+                print(f"Error associating live issue: {exc}")
+                sys.exit(1)
+
         # 2. Locate source repository
         source_repo: Path | None = None
         if args.source:
@@ -600,7 +651,14 @@ def main() -> None:
 
         # 5. Build publication commit in a fresh disposable checkout of base_sha
         branch_name = f"bug-fixer/{run_rec.run_id}"
-        commit_msg = f"fix: resolve issue #{run_rec.issue_number} ({run_rec.run_id})\n\nCandidate patch verified by Bug Fixer."
+        issue_title = getattr(run_rec, "issue_title", "") or ""
+        if run_rec.provenance == "live_github":
+            pr_title = f"Fix: {issue_title} (#{run_rec.issue_number})" if issue_title else f"Fix: resolve issue #{run_rec.issue_number}"
+            commit_msg = f"fix: resolve #{run_rec.issue_number} - {issue_title or run_rec.run_id} ({run_rec.run_id})\n\nCandidate patch verified by Bug Fixer."
+        else:
+            clean_title = issue_title or f"automated repair for {run_rec.repo_name}"
+            pr_title = clean_title if clean_title.lower().startswith("fix") else f"Fix: {clean_title}"
+            commit_msg = f"fix: {clean_title} ({run_rec.run_id})\n\nCandidate patch verified by Bug Fixer (local rehearsal)."
 
         with tempfile.TemporaryDirectory() as tmp_pub_dir:
             tmp_checkout = Path(tmp_pub_dir) / "disposable_pub"
@@ -667,7 +725,7 @@ def main() -> None:
                 repo=run_rec.repo_name,
                 branch_name=branch_name,
                 base_branch=run_rec.base_branch or "main",
-                title=f"fix: resolve issue #{run_rec.issue_number}",
+                title=pr_title,
                 body=body,
                 reviewer=args.reviewer or "",
                 api_token=token,

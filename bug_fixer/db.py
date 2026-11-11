@@ -45,6 +45,7 @@ class EvidenceStore:
                     run_id TEXT PRIMARY KEY,
                     issue_url TEXT NOT NULL,
                     issue_number INTEGER NOT NULL,
+                    issue_title TEXT,
                     repo_owner TEXT NOT NULL,
                     repo_name TEXT NOT NULL,
                     base_sha TEXT NOT NULL,
@@ -101,7 +102,9 @@ class EvidenceStore:
             cursor = conn.execute("PRAGMA table_info(runs);")
             columns = {row["name"] for row in cursor.fetchall()}
             for col, col_type in [
+                ("issue_title", "TEXT"),
                 ("provenance", "TEXT DEFAULT 'fixture'"),
+                ("origin_provenance", "TEXT DEFAULT 'fixture'"),
                 ("base_branch", "TEXT DEFAULT 'main'"),
                 ("reviewer", "TEXT"),
                 ("reviewer_status", "TEXT"),
@@ -123,15 +126,16 @@ class EvidenceStore:
         with self._get_conn() as conn:
             conn.execute("""
                 INSERT INTO runs (
-                    run_id, issue_url, issue_number, repo_owner, repo_name,
+                    run_id, issue_url, issue_number, issue_title, repo_owner, repo_name,
                     base_sha, stage, status, reproducer_nodeid, reproducer_hash,
                     candidate_patch_hash, retry_budget, attempts_used, workspace_hash,
-                    provenance, base_branch, reviewer, reviewer_status, branch_name,
+                    provenance, origin_provenance, base_branch, reviewer, reviewer_status, branch_name,
                     pr_number, pr_url, branch_protection, publication_mode,
                     verified_tree_id, publication_commit_sha, manifest_hash,
                     error_detail, challenge_status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
+                    issue_title = COALESCE(excluded.issue_title, runs.issue_title),
                     base_sha = CASE WHEN excluded.base_sha != '' THEN excluded.base_sha ELSE runs.base_sha END,
                     stage = excluded.stage,
                     status = excluded.status,
@@ -142,6 +146,7 @@ class EvidenceStore:
                     attempts_used = excluded.attempts_used,
                     workspace_hash = COALESCE(excluded.workspace_hash, runs.workspace_hash),
                     provenance = COALESCE(excluded.provenance, runs.provenance),
+                    origin_provenance = COALESCE(runs.origin_provenance, excluded.origin_provenance),
                     base_branch = COALESCE(excluded.base_branch, runs.base_branch),
                     reviewer = COALESCE(excluded.reviewer, runs.reviewer),
                     reviewer_status = COALESCE(excluded.reviewer_status, runs.reviewer_status),
@@ -157,11 +162,12 @@ class EvidenceStore:
                     challenge_status = COALESCE(excluded.challenge_status, runs.challenge_status),
                     updated_at = excluded.updated_at
             """, (
-                run.run_id, run.issue_url, run.issue_number, run.repo_owner, run.repo_name,
+                run.run_id, run.issue_url, run.issue_number, getattr(run, "issue_title", None), run.repo_owner, run.repo_name,
                 run.base_sha, run.stage.value if hasattr(run.stage, "value") else str(run.stage),
                 run.status, run.reproducer_nodeid, run.reproducer_hash,
                 run.candidate_patch_hash, run.retry_budget, run.attempts_used, workspace_hash,
-                run.provenance, run.base_branch, run.reviewer, run.reviewer_status, run.branch_name,
+                run.provenance, getattr(run, "origin_provenance", run.provenance or "fixture"),
+                run.base_branch, run.reviewer, run.reviewer_status, run.branch_name,
                 run.pr_number, run.pr_url, run.branch_protection, run.publication_mode,
                 run.verified_tree_id, run.publication_commit_sha, run.manifest_hash,
                 run.error_detail, getattr(run, "challenge_status", None), run.created_at or now, now
@@ -177,6 +183,7 @@ class EvidenceStore:
                 run_id=row["run_id"],
                 issue_url=row["issue_url"],
                 issue_number=row["issue_number"],
+                issue_title=row["issue_title"] if "issue_title" in keys else None,
                 repo_owner=row["repo_owner"],
                 repo_name=row["repo_name"],
                 base_sha=row["base_sha"],
@@ -190,6 +197,7 @@ class EvidenceStore:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 provenance=row["provenance"] if "provenance" in keys and row["provenance"] else "fixture",
+                origin_provenance=row["origin_provenance"] if "origin_provenance" in keys and row["origin_provenance"] else (row["provenance"] if "provenance" in keys and row["provenance"] else "fixture"),
                 base_branch=row["base_branch"] if "base_branch" in keys and row["base_branch"] else "main",
                 reviewer=row["reviewer"],
                 reviewer_status=row["reviewer_status"] if "reviewer_status" in keys else None,

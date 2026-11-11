@@ -4,7 +4,73 @@ This demo presents the complete, auditable issue-to-PR workflow for **Bug Fixer*
 
 ---
 
-## 1. The User's Problem (30 seconds)
+## 0. Headline: Genuine Upstream Defect Repair (`run_5cdd92182ddc`)
+
+Bug Fixer repaired a genuine, untouched upstream defect on public repository `AnanthKumar1810/ml-code-review-assistant` at upstream default branch `53b302526d6235c30929eca54243eadc569cf73c`.
+
+### The Genuine Bug:
+In `src/patterns.py`, the heuristic scanner rule `AP002` ("Mutable default argument") contained regex `r"def\s+\w+\([^)]*=\s*(\[\]|\{\}|\(\))"`. Empty tuple `()` is immutable in Python, so standard idiomatic functions like `def configure(options=()): pass` were falsely flagged as critical bugs.
+
+### 3-Minute Verification Runbook:
+```powershell
+# Step 1: One-Command Three-State Complete PR Docker Verification
+python -m bug_fixer.cli verify --release-dir .bug-fixer-data/release_artifacts/ml-code-review-assistant-ap002
+
+# Step 2: Inspect the 7-Part Judge Decision Trace
+python -m bug_fixer.cli show --run run_5cdd92182ddc
+
+# Step 3: Replay independent Docker verification from clean checkout
+python -m bug_fixer.cli verify --run run_5cdd92182ddc --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
+
+# Step 4: Run the generalization patch challenge
+python -m bug_fixer.cli challenge --run run_5cdd92182ddc --source .bug-fixer-data/demo_repo/ml-code-review-assistant
+
+# Step 5: Test negative controls & corrupted artifact rejection
+python -m pytest tests/test_complete_pr_verification.py -v
+```
+
+### The Clean 1-Line Production Diff:
+```diff
+diff --git a/src/patterns.py b/src/patterns.py
+index 67e6e74..e46616f 100644
+--- a/src/patterns.py
++++ b/src/patterns.py
+@@ -29,7 +29,7 @@ ANTI_PATTERNS: List[AntiPattern] = [
+     AntiPattern(
+         id="AP002", name="Mutable default argument", severity="critical",
+         description="Default mutable arguments are shared across all calls.",
+-        regex=r"def\s+\w+\([^)]*=\s*(\[\]|\{\}|\(\))",
++        regex=r"def\s+\w+\([^)]*=\s*(\[\]|\{\})",
+         fix_hint="Use None as default and initialise inside the function.",
+     ),
+     AntiPattern(
+```
+- **Stats**: 1 file changed, 1 insertion, 1 deletion (0 whole-file churn; CRLF newlines preserved).
+- **Docker Suite**: 12/12 passed (0 regressions).
+- **Verified Tree ID**: `653243cff3bd17706e13a8a718e082db4146427b`.
+- **Publication Commit**: `7421f1487ad0ba1be27071c253929999fd2e8c53` in `demo_remote.git` (Tree match: YES).
+
+---
+
+## 0.5. Real-World OSS Library Benchmark (`boltons` & `more-itertools`)
+
+Bug Fixer was empirically benchmarked against popular real-world Python packages in Docker:
+
+| Repository | Defect Case | Baseline (No Retrieval) | Bug Fixer (Dynamic Retrieval) | Attempts | Time (s) | Replay Verdict | Verified Tree ID |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`mahmoud/boltons`** (6.5k★) | `boltons/mathutils.py::clamp` | `repair_failed` (0/2) | **`ready_for_review`** | **1** | **23.13s** | **VERIFIED** | `00225858697d9d6ca9f1d1903b9cf584cc60939a` |
+| **`more-itertools`** (3.4k★) | `more_itertools/recipes.py::take` | `repair_failed` (0/2) | **`ready_for_review`** | **1** | **59.99s** | **VERIFIED** | `035e5fd11c0af5b140c9f209ba137743bbca7ae5` |
+
+**Both libraries were repaired on the very first attempt (`attempts: 1`), while both baselines failed across all retries.**
+
+```powershell
+# Run the paired benchmark pilot on real libraries
+python benchmarks/repository_pilot.py
+```
+
+---
+
+## 1. The Historical Seeded Demonstrations (run_21c & run_909)
 In Python, default arguments are evaluated once at function definition time. Using a mutable default like `def configure(settings={}): pass` causes state to leak across function calls. 
 
 In `AnanthKumar1810/ml-code-review-assistant`, anti-pattern detector `AP002` originally only caught empty lists (`items=[]`), completely missing empty dictionary literals. A developer filed an issue reporting this false negative.

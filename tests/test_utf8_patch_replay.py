@@ -21,6 +21,7 @@ def test_utf8_diff_generation_with_non_ascii_bytes():
         # Init git repo with core.autocrlf false
         subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
         subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "core.whitespace", "cr-at-eol"], cwd=repo_dir, check=True)
         subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo_dir, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True)
 
@@ -98,3 +99,59 @@ def test_corrupted_zero_byte_patch_blocks_publication():
     )
     assert eligible is False
     assert any("No real implementation changes exist in candidate patch" in d for d in disq)
+
+
+def test_crlf_preservation_prevents_whole_file_diff_churn():
+    """Verify that editing a CRLF file preserves its newline convention and prevents whole-file diff churn."""
+    from bug_fixer.workspace import Workspace
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_dir = Path(tmp) / "repo"
+        repo_dir.mkdir()
+
+        subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "core.whitespace", "cr-at-eol"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.local"], cwd=repo_dir, check=True)
+
+        crlf_lines = ["line one", "line two with target_token to change", "line three", "line four"]
+        content_crlf = "\r\n".join(crlf_lines) + "\r\n"
+        target_file = repo_dir / "module.py"
+        target_file.write_bytes(content_crlf.encode("utf-8"))
+
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial crlf commit"], cwd=repo_dir, check=True)
+
+        # Use Workspace to edit target_token -> replacement_token
+        ws = Workspace(repo_dir)
+        ws.replace_text("module.py", "target_token", "replacement_token")
+
+        # Verify the file on disk remains pure CRLF
+        raw_after = target_file.read_bytes()
+        assert b"\r\n" in raw_after
+        # No lone LF
+        assert raw_after.count(b"\r\n") == 4
+        assert raw_after.count(b"\n") == 4
+
+        # Verify git diff is minimal: exactly 1 insertion and 1 deletion, not all 4 lines
+        numstat_proc = subprocess.run(
+            ["git", "diff", "--numstat", "module.py"],
+            cwd=repo_dir, capture_output=True, text=True, check=True
+        )
+        assert numstat_proc.stdout.strip() == "1\t1\tmodule.py"
+
+        # Verify git diff --check has 0 errors
+        check_proc = subprocess.run(
+            ["git", "diff", "--check"],
+            cwd=repo_dir, capture_output=True, text=True, check=True
+        )
+        assert check_proc.returncode == 0
+
+        # Verify generated candidate patch is clean unified diff
+        patch = generate_candidate_patch(repo_dir)
+        assert "-line two with target_token to change" in patch
+        assert "+line two with replacement_token to change" in patch
+        assert "-line one" not in patch
+        assert "-line three" not in patch
+

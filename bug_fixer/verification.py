@@ -501,3 +501,230 @@ def verify_run(
             "disqualifications": reasons,
         }
         return eligible, report
+
+
+def verify_complete_pr_package(
+    release_dir: Path,
+    upstream_repo: Path,
+    *,
+    runner: str = "docker",
+    image: str = "bugfixer-validator:py313",
+) -> tuple[bool, dict[str, Any]]:
+    """
+    Independent Three-State Docker verification of a complete PR release artifact.
+    
+    Verifies:
+      State 1: Clean checkout at base_sha -> maintained test suite passes.
+      State 2: Clean checkout + declared regression test only -> fails with expected defect assertion;
+               production files remain unmodified.
+      State 3: Clean checkout + full saved patch -> regression test passes, maintained suite passes,
+               behavioral invariant checks pass, and reconstructed Git Tree matches manifest candidate_tree_id.
+    """
+    manifest_path = release_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return False, {"error": f"Manifest not found: {manifest_path}"}
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, {"error": f"Failed to parse manifest: {exc}"}
+
+    base_sha = manifest.get("base_sha", "")
+    if not is_valid_commit_sha(base_sha):
+        return False, {"error": f"Invalid base commit SHA in manifest: '{base_sha}'"}
+
+    expected_tree_id = manifest.get("candidate_tree_id")
+    reproducer_nodeid = manifest.get("reproducer_nodeid", "tests/test_project4.py::test_ap002_immutable_tuple_default")
+
+    # Validate complete patch file integrity against manifest
+    patch_file = release_dir / "complete.patch"
+    if not patch_file.is_file():
+        return False, {"error": f"Complete patch file not found: {patch_file}"}
+
+    patch_bytes = patch_file.read_bytes()
+    patch_hash = hashlib.sha256(patch_bytes).hexdigest()
+    declared_entry = manifest.get("files", {}).get("complete.patch")
+    if declared_entry and declared_entry.get("sha256") != patch_hash:
+        return False, {
+            "error": f"Patch hash mismatch: declared {declared_entry.get('sha256')} but computed {patch_hash}"
+        }
+
+    # Validate regression test patch file integrity
+    test_patch_file = release_dir / "regression_test.patch"
+    if not test_patch_file.is_file():
+        return False, {"error": f"Regression test patch not found: {test_patch_file}"}
+    test_patch_bytes = test_patch_file.read_bytes()
+    test_patch_hash = hashlib.sha256(test_patch_bytes).hexdigest()
+
+    patch_text = patch_bytes.decode("utf-8")
+    test_patch_text = test_patch_bytes.decode("utf-8")
+
+    temp_root = Path(tempfile.mkdtemp(prefix="bugfixer_complete_verify_"))
+    try:
+        def _checkout_base(dest: Path) -> None:
+            subprocess.run(
+                ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.whitespace=cr-at-eol", "-q", str(upstream_repo), str(dest)],
+                check=True,
+            )
+            subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=dest, check=True)
+            subprocess.run(["git", "config", "core.whitespace", "cr-at-eol"], cwd=dest, check=True)
+            res = subprocess.run(["git", "checkout", "-f", base_sha], cwd=dest, capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                raise VerificationError(f"Failed to checkout base SHA {base_sha}: {res.stderr}")
+
+        # ---------------------------------------------------------
+        # State 1: Clean checkout at base_sha -> Maintained suite passes
+        # ---------------------------------------------------------
+        state1_dir = temp_root / "state1_clean_base"
+        _checkout_base(state1_dir)
+        state1_val = validate_workspace(state1_dir, selected_tests=None, runner=runner, image=image)
+        if not state1_val.passed:
+            return False, {
+                "error": "State 1 failed: maintained test suite did not pass on untouched upstream base commit",
+                "state1_exit_code": state1_val.exit_code,
+                "state1_output": state1_val.checks[0].output if state1_val.checks else "",
+            }
+        state1_test_count = len(state1_val.test_cases)
+
+        # ---------------------------------------------------------
+        # State 2: Base + Regression test ONLY -> Fails with expected assertion
+        # ---------------------------------------------------------
+        state2_dir = temp_root / "state2_test_only"
+        _checkout_base(state2_dir)
+
+        # Apply regression test patch
+        apply_test_res = subprocess.run(
+            ["git", "apply", "--ignore-whitespace", "--ignore-space-change", "-"],
+            input=test_patch_bytes,
+            cwd=state2_dir,
+            capture_output=True,
+            check=False,
+        )
+        if apply_test_res.returncode != 0:
+            return False, {
+                "error": f"State 2 failed: regression test patch failed to apply: {apply_test_res.stderr}"
+            }
+
+        # Confirm production files still match upstream
+        changed_proc = subprocess.run(["git", "diff", "--name-only"], cwd=state2_dir, capture_output=True, text=True, check=True)
+        changed_files = [f.strip() for f in changed_proc.stdout.splitlines() if f.strip()]
+        non_test_changes = [f for f in changed_files if not f.startswith("tests/") and not f.endswith("_test.py")]
+        if non_test_changes:
+            return False, {
+                "error": f"State 2 failed: regression test modified production files: {non_test_changes}"
+            }
+
+        # Run reproducer in Docker
+        state2_val = validate_workspace(state2_dir, selected_tests=[reproducer_nodeid], runner=runner, image=image)
+        if state2_val.passed:
+            return False, {
+                "error": "State 2 failed: reproducer test unexpectedly passed on base commit (defect not reproduced)"
+            }
+        if state2_val.exit_code in (2, 4) or state2_val.reproducer_outcome == "missing_dependency":
+            return False, {
+                "error": f"State 2 failed: infrastructure error during reproduction (exit={state2_val.exit_code}): {state2_val.issues}"
+            }
+
+        # ---------------------------------------------------------
+        # State 3: Base + Full complete PR patch -> Everything passes
+        # ---------------------------------------------------------
+        state3_dir = temp_root / "state3_complete_pr"
+        _checkout_base(state3_dir)
+
+        apply_full_res = subprocess.run(
+            ["git", "apply", "--ignore-whitespace", "--ignore-space-change", "-"],
+            input=patch_bytes,
+            cwd=state3_dir,
+            capture_output=True,
+            check=False,
+        )
+        if apply_full_res.returncode != 0:
+            return False, {
+                "error": f"State 3 failed: complete patch failed to apply: {apply_full_res.stderr}",
+                "base_sha": base_sha,
+                "validator_image": image,
+                "state1_base_passed": state1_val.passed,
+                "state1_test_count": state1_test_count,
+                "state2_reproduced": not state2_val.passed,
+                "complete_patch_hash": patch_hash,
+            }
+
+        # Stage and compute reconstructed tree ID immediately after apply
+        # (before validation creates any .pytest_cache or __pycache__ artifacts)
+        subprocess.run(["git", "add", "-A"], cwd=state3_dir, check=True)
+        tree_proc = subprocess.run(["git", "write-tree"], cwd=state3_dir, capture_output=True, text=True, check=True)
+        actual_tree_id = tree_proc.stdout.strip()
+
+        # Validate reproducer in Docker
+        state3_rep_val = validate_workspace(state3_dir, selected_tests=[reproducer_nodeid], runner=runner, image=image)
+        if not state3_rep_val.passed:
+            return False, {
+                "error": "State 3 failed: reproducer test failed on complete patched workspace",
+                "output": state3_rep_val.checks[0].output if state3_rep_val.checks else "",
+                "base_sha": base_sha,
+                "validator_image": image,
+                "state1_base_passed": state1_val.passed,
+                "state1_test_count": state1_test_count,
+                "state2_reproduced": not state2_val.passed,
+                "state3_reproducer_passed": False,
+                "actual_tree_id": actual_tree_id,
+                "complete_patch_hash": patch_hash,
+            }
+
+        # Validate maintained suite in Docker
+        state3_suite_val = validate_workspace(state3_dir, selected_tests=None, runner=runner, image=image)
+        if not state3_suite_val.passed:
+            return False, {
+                "error": "State 3 failed: maintained test suite had regressions on complete patched workspace",
+                "output": state3_suite_val.checks[0].output if state3_suite_val.checks else "",
+                "base_sha": base_sha,
+                "validator_image": image,
+                "state1_base_passed": state1_val.passed,
+                "state1_test_count": state1_test_count,
+                "state2_reproduced": not state2_val.passed,
+                "state3_reproducer_passed": True,
+                "state3_suite_passed": False,
+                "actual_tree_id": actual_tree_id,
+                "complete_patch_hash": patch_hash,
+            }
+        state3_test_count = len(state3_suite_val.test_cases)
+
+        if expected_tree_id and actual_tree_id != expected_tree_id:
+            return False, {
+                "error": f"Candidate tree mismatch: expected {expected_tree_id}, but reconstructed {actual_tree_id}",
+                "expected_tree_id": expected_tree_id,
+                "actual_tree_id": actual_tree_id,
+                "base_sha": base_sha,
+                "validator_image": image,
+                "state1_base_passed": state1_val.passed,
+                "state1_test_count": state1_test_count,
+                "state2_reproduced": not state2_val.passed,
+                "state3_reproducer_passed": state3_rep_val.passed,
+                "state3_suite_passed": state3_suite_val.passed,
+                "state3_test_count": state3_test_count,
+                "complete_patch_hash": patch_hash,
+                "tree_match": False,
+            }
+
+        report = {
+            "verified": True,
+            "base_sha": base_sha,
+            "complete_patch_hash": patch_hash,
+            "regression_test_hash": test_patch_hash,
+            "validator_image": image,
+            "runner": runner,
+            "state1_base_passed": state1_val.passed,
+            "state1_test_count": state1_test_count,
+            "state2_reproduced": not state2_val.passed,
+            "state2_failing_assertions": state2_val.failing_assertions,
+            "state3_reproducer_passed": state3_rep_val.passed,
+            "state3_suite_passed": state3_suite_val.passed,
+            "state3_test_count": state3_test_count,
+            "expected_tree_id": expected_tree_id,
+            "actual_tree_id": actual_tree_id,
+            "tree_match": (expected_tree_id == actual_tree_id) if expected_tree_id else True,
+        }
+        return True, report
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+

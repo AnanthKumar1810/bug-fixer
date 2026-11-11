@@ -78,20 +78,29 @@ def is_test_file(path_str: str) -> bool:
 def resolve_import_to_path(workspace: Workspace, source_file: str, module_name: str) -> str | None:
     """Resolve an imported module name to a relative file path in the workspace."""
     parts = module_name.split(".")
-    # 1. As relative package
+    # 1. As relative module or package
     cand1 = "/".join(parts) + ".py"
     if (workspace.root / cand1).is_file():
         return cand1
+    cand1_init = "/".join(parts) + "/__init__.py"
+    if (workspace.root / cand1_init).is_file():
+        return cand1_init
     # 2. In same dir as source_file
     source_dir = Path(source_file).parent.as_posix()
     if source_dir != ".":
         cand2 = f"{source_dir}/{cand1}"
         if (workspace.root / cand2).is_file():
             return cand2
+        cand2_init = f"{source_dir}/{cand1_init}"
+        if (workspace.root / cand2_init).is_file():
+            return cand2_init
     # 3. Search in src/
     cand3 = f"src/{cand1}"
     if (workspace.root / cand3).is_file():
         return cand3
+    cand3_init = f"src/{cand1_init}"
+    if (workspace.root / cand3_init).is_file():
+        return cand3_init
     return None
 
 
@@ -334,6 +343,11 @@ def build_compact_repair_packet(
             if prev.get("failures"):
                 for fail in prev.get("failures")[:3]:
                     lines.append(f"  * Suite/regression failure: {fail}")
+            if prev.get("patch_diff"):
+                lines.append(f"  * Rejected Patch from Attempt {prev.get('attempt')}:\n```diff\n{prev.get('patch_diff')}\n```")
+            if prev.get("unresolved_question"):
+                lines.append(f"  * Feedback: {prev.get('unresolved_question')}")
+        lines.append("\nCRITICAL DIRECTIVE: Do NOT repeat the rejected edits shown above. They failed validation. Formulate a different hypothesis.")
 
     lines.append("\n=== RELEVANT SOURCE EXCERPTS (FRESH) ===")
     if not excerpts:
