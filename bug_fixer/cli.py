@@ -418,6 +418,51 @@ def main() -> None:
             print(f"Branch:            {run_rec.branch_name}")
             print(f"Publication Commit: {run_rec.publication_commit_sha or 'N/A'}")
             print(f"PR URL:            {run_rec.pr_url}")
+
+        # 7. DECISION TRACE (CONSEQUENTIAL REPAIR DECISION)
+        print("\n--- 7. JUDGE DECISION TRACE ---")
+        print("1. Observed Failure:")
+        print(f"   Test:               {run_rec.reproducer_nodeid}")
+        if fail_assertions:
+            print(f"   Failure Assertion:  {fail_assertions[0]}")
+        else:
+            print("   Failure Assertion:  AssertionError (Exit code 1)")
+
+        tools = rep_data.get("review_answers", {}).get("3_what_did_it_actually_edit", {}).get("executed_tool_calls", [])
+        print("2. Next Action (Repair Tool Selection):")
+        if tools:
+            first_tool = tools[0]
+            print(f"   Selected Tool:      {first_tool.get('tool', 'replace_text')} on '{first_tool.get('path', 'unknown')}'")
+            print("   Selection Mode:     Model-selected (Qwen 2.5 Coder 7B tool call via Ollama)")
+        elif run_rec.stage in (RunState.REPAIR_FAILED, RunState.NOT_REPRODUCED):
+            print(f"   Workflow Action:    Stopped at stage '{run_rec.stage.value}' (no valid repair generated)")
+            print("   Selection Mode:     Deterministic state machine gate")
+        else:
+            print(f"   Workflow Action:    Deterministic transition to '{run_rec.stage.value}'")
+            print("   Selection Mode:     Deterministic state machine gate")
+
+        print("3. Evidence Returned (Dynamic Traceback Excerpt):")
+        if deliv:
+            first_ex = deliv[0]
+            print(f"   Delivered Excerpt:  {first_ex.get('path')} (lines {first_ex.get('start_line')}-{first_ex.get('end_line')})")
+            print(f"   Delivery Rationale: {first_ex.get('reason')}")
+            print("   Sent to Model:      YES (Recorded in prompt delivery manifest)")
+        else:
+            print("   Delivered Excerpt:  None (Baseline context mode)")
+            print("   Sent to Model:      NO (Excerpts disabled)")
+
+        print("4. State Carried Forward:")
+        print(f"   Pinned Base SHA:    {run_rec.base_sha[:12] if run_rec.base_sha else 'None'}")
+        print(f"   Reproducer Hash:    {run_rec.reproducer_hash[:16] if run_rec.reproducer_hash else 'None'}")
+        print(f"   Candidate Tree ID:  {run_rec.verified_tree_id or 'None'}")
+        print(f"   Attempts Used:      {run_rec.attempts_used} of {run_rec.retry_budget}")
+
+        print("5. Outcome:")
+        print(f"   Patch Status:       {'Valid candidate generated' if patch_text.strip() else 'No patch / failed'}")
+        suite_pass = run_rec.stage in (RunState.VERIFIED, RunState.READY_FOR_REVIEW, RunState.PUBLISHED)
+        print(f"   Validation Outcome: Reproducer {'PASSED' if suite_pass else 'FAILED'}; Suite {'PASSED' if suite_pass else 'FAILED'}")
+        print(f"   Independent Replay: {'VERIFIED' if eligible else ('INELIGIBLE (' + '; '.join(reasons) + ')') if reasons else 'FAILED'}")
+        print(f"   Draft PR Status:    {run_rec.publication_mode or 'simulated_local'} ({run_rec.pr_url or 'Local bare remote publication'})")
         sys.exit(0)
 
     elif args.command == "verify":

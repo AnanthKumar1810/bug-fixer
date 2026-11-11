@@ -305,18 +305,24 @@ class BugFixerWorkflow:
                     break
 
             # If failed, record contradicted prediction
+            fail_notes = latest_cand_val.failing_assertions or [c.name for c in latest_cand_val.checks if not c.passed]
             earlier_attempts.append({
                 "attempt": attempt,
                 "changed_files": list(workspace.changed_files),
                 "status": "failed",
-                "failures": cand_val.failing_assertions,
+                "failures": fail_notes,
             })
             self.store.record_event(
                 run_id, RunState.REPAIRING.value, "repair_attempt_failed",
                 attempt_number=attempt,
                 outputs_ref=cand_art_hash,
-                data={"failing_assertions": cand_val.failing_assertions}
+                data={"failing_assertions": fail_notes}
             )
+            # Revert workspace edits so next attempt starts from a clean base
+            import subprocess
+            subprocess.run(["git", "-C", str(workspace.root), "checkout", "--", "."], check=False, capture_output=True)
+            subprocess.run(["git", "-C", str(workspace.root), "clean", "-fd"], check=False, capture_output=True)
+            workspace._changed_files.clear()
             self.store.save_run(run_record, workspace.compute_workspace_hash())
 
         # If loop finished without verification

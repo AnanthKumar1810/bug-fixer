@@ -23,7 +23,7 @@ from bug_fixer.publication import (
 from bug_fixer.reporting import render_review_claims
 
 
-def test_destination_verification_matches_or_rejects():
+def test_destination_verification_matches_or_rejects(tmp_path):
     """Verify that destination checker accepts matching repos and rejects mismatches."""
     run = RunRecord(
         run_id="run_dest_test",
@@ -57,7 +57,10 @@ def test_destination_verification_matches_or_rejects():
     assert "fast-org/greeting-service" in msg3
 
     # 4. Local bare repos allowed
-    ok4, msg4 = verify_publication_destination(".bug-fixer-data/test_demo_remote.git", run)
+    local_bare = tmp_path / "test_demo_remote.git"
+    import subprocess
+    subprocess.run(["git", "init", "--bare", str(local_bare)], check=True, capture_output=True)
+    ok4, msg4 = verify_publication_destination(str(local_bare), run)
     assert ok4 is True
 
     # 5. Unknown alias without repo context or unconfigured alias is rejected

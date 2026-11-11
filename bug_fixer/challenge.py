@@ -62,6 +62,22 @@ def test_greeting_input_variations():
         assert format_greeting(n) == f'Hello, {n}!'
 """
 
+REVIEW_ASSISTANT_VARIATION_TEST = """
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from patterns import heuristic_scan
+
+def test_mutable_default_variations():
+    cases = [
+        "def query(filter={}): return filter",
+        "def batch_process(records=[], config={}): return records",
+    ]
+    for c in cases:
+        findings = heuristic_scan(c)
+        ids = [f['id'] for f in findings]
+        assert 'AP002' in ids, f'AP002 must detect mutable defaults in: {c}'
+"""
+
 
 def get_historical_workaround(repo_name: str) -> str | None:
     """Return known historical workaround for a fixture if available."""
@@ -146,7 +162,8 @@ def run_patch_challenge(
         # Inject input variation challenge test into validation checkouts (outside model workspace)
         variation_file_rel = "tests/test_challenge_variations.py"
         test_code_to_add = extra_challenge_test_code or (
-            GREETING_VARIATION_TEST if "greeting" in run_rec.repo_name.lower() else None
+            GREETING_VARIATION_TEST if "greeting" in run_rec.repo_name.lower()
+            else (REVIEW_ASSISTANT_VARIATION_TEST if "ml-code-review" in run_rec.repo_name.lower() else None)
         )
         if test_code_to_add:
             (dir_base / variation_file_rel).write_text(test_code_to_add, encoding="utf-8")
@@ -203,6 +220,16 @@ def run_patch_challenge(
                 challenge_checks.append({
                     "id": "tests/test_challenge_variations.py::test_greeting_input_variations",
                     "desc": "Input variations across multiple names ('Charlie', 'Diana', 'Everyone')",
+                    "role": "input_variation"
+                })
+        elif "ml-code-review" in run_rec.repo_name.lower():
+            challenge_checks.extend([
+                {"id": "tests/test_project4.py::test_detect_mutable_default", "desc": "Original list default check (regression safety)", "role": "regression_check"},
+            ])
+            if test_code_to_add:
+                challenge_checks.append({
+                    "id": "tests/test_challenge_variations.py::test_mutable_default_variations",
+                    "desc": "Input variations across multi-param & dict signatures",
                     "role": "input_variation"
                 })
 

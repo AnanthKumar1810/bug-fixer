@@ -331,6 +331,9 @@ def build_compact_repair_packet(
         lines.append(f"\n=== PREVIOUS ATTEMPTS IN THIS RUN (ATTEMPT {attempt}) ===")
         for prev in earlier_attempts:
             lines.append(f"- Attempt {prev.get('attempt')}: Edited {prev.get('changed_files', [])}, Result: {prev.get('status')} (Contradicted expected outcome)")
+            if prev.get("failures"):
+                for fail in prev.get("failures")[:3]:
+                    lines.append(f"  * Suite/regression failure: {fail}")
 
     lines.append("\n=== RELEVANT SOURCE EXCERPTS (FRESH) ===")
     if not excerpts:
