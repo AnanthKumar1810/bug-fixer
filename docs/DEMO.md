@@ -8,6 +8,32 @@ This demo presents the complete, auditable issue-to-PR workflow for **Bug Fixer*
 
 Bug Fixer repaired a genuine, untouched upstream defect on public repository `AnanthKumar1810/ml-code-review-assistant` at upstream default branch `53b302526d6235c30929eca54243eadc569cf73c`.
 
+---
+
+## 0.1. Live Web Operations Console & Interactive Defect Repair Studio
+
+Judges and developers can launch and test Bug Fixer directly via the web operations console:
+
+```powershell
+# Start the web console (runs on http://127.0.0.1:8000)
+python -m uvicorn bug_fixer.api:app --host 127.0.0.1 --port 8000
+```
+
+### Features Available in the Operations Console:
+1. **Interactive Defect Repair Studio**:
+   - One-click presets for testing novel defect scenarios:
+     - **Greeting Service** (`fixtures/cross_file_repo`): Tests multi-module cross-file retrieval and callee repair without modifying callers or tests.
+     - **Config Loader** (`fixtures/config_loader_repo`): Tests fallback logic when environment variables are unset.
+     - **Math Clamp** (`fixtures/math_clamp_repo`): Tests inverted boundary constraints.
+     - **Custom Repository**: Accepts arbitrary repository path and failing test nodeid.
+   - Click **"Launch Autonomous Repair"**: Live execution in isolated Docker container `bugfixer-validator:py313` with real-time 4-part diagnosis, surgical syntax-highlighted diff, and verified Git tree hash.
+2. **SWE-bench Three-State Verification Engine**:
+   - One-click replay verification of upstream defect `AP002` across all three states: Clean Base &rarr; Regression Injected &rarr; Candidate Replay.
+3. **Cryptographic Persistent Audit History**:
+   - Live SQLite WAL log of all runs, timestamps, and tree SHA hashes.
+
+---
+
 ### The Genuine Bug:
 In `src/patterns.py`, the heuristic scanner rule `AP002` ("Mutable default argument") contained regex `r"def\s+\w+\([^)]*=\s*(\[\]|\{\}|\(\))"`. Empty tuple `()` is immutable in Python, so standard idiomatic functions like `def configure(options=()): pass` were falsely flagged as critical bugs.
 
