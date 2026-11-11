@@ -12,8 +12,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from bug_fixer.db import compute_sha256
 from bug_fixer.docker_runner import validate_workspace
 from bug_fixer.intake import compute_test_hash, is_valid_commit_sha
+from bug_fixer.models import RunRecord, ValidationSummary
 from bug_fixer.workspace import PROTECTED_FILES
 
 
@@ -119,6 +121,119 @@ def extract_diff_changed_files(patch_text: str) -> list[str]:
     return files
 
 
+def check_challenge_eligibility(
+    run: RunRecord,
+    store: Any,
+    verified_tree_id: str | None = None,
+) -> list[str]:
+    """
+    Evaluate challenge artifact and history for publication eligibility.
+    Enforces rules:
+    - passed with matching run ID and tree: eligible.
+    - failed: refused with path and failed check.
+    - tree changed during challenge: refused.
+    - malformed, wrong run ID, or wrong tree: refused.
+    - never run or inconclusive: allowed under optional policy.
+    - recorded failure now missing: refused.
+    """
+    reasons: list[str] = []
+    run_dir = store.artifacts_dir / run.run_id
+    chal_file = run_dir / "challenge.json"
+
+    manifest = store.get_manifest(run.run_id)
+    manifest_has_challenge = bool(manifest and "challenge.json" in manifest.files)
+    manifest_challenge_status = getattr(manifest, "challenge_status", None) if manifest else None
+    recorded_challenge_status = getattr(run, "challenge_status", None) or manifest_challenge_status
+
+    target_tree = verified_tree_id or run.verified_tree_id
+
+    if chal_file.is_file():
+        # 1. Manifest hash check if challenge is registered in manifest
+        if manifest_has_challenge and manifest is not None:
+            expected_entry = manifest.files["challenge.json"]
+            raw_bytes = chal_file.read_bytes()
+            actual_sha = compute_sha256(raw_bytes)
+            if actual_sha != expected_entry.sha256:
+                reasons.append(
+                    f"Challenge artifact manifest hash mismatch (expected {expected_entry.sha256[:12]}, "
+                    f"found {actual_sha[:12]}). Evidence at: {chal_file}"
+                )
+
+        # 2. Parse JSON
+        try:
+            chal_data = json.loads(chal_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            reasons.append(f"Challenge artifact is malformed (invalid JSON: {e}). Evidence at: {chal_file}")
+            return reasons
+
+        # 3. Validate against ChallengeSummary
+        try:
+            from bug_fixer.challenge import ChallengeSummary
+            summary = ChallengeSummary.model_validate(chal_data)
+        except Exception as e:
+            reasons.append(f"Challenge artifact is malformed (schema validation error: {e}). Evidence at: {chal_file}")
+            return reasons
+
+        # 4. Check run_id binding
+        if summary.run_id != run.run_id:
+            reasons.append(
+                f"Challenge artifact belongs to run '{summary.run_id}', but current run is '{run.run_id}'. "
+                f"Evidence at: {chal_file}"
+            )
+
+        # 5. Check candidate tree binding
+        if target_tree:
+            if summary.candidate_tree_before and summary.candidate_tree_before != target_tree:
+                reasons.append(
+                    f"Challenge artifact candidate tree '{summary.candidate_tree_before}' does not match "
+                    f"verified candidate tree '{target_tree}'. Evidence at: {chal_file}"
+                )
+            if summary.candidate_tree_after and summary.candidate_tree_after != target_tree:
+                reasons.append(
+                    f"Challenge artifact post-challenge tree '{summary.candidate_tree_after}' does not match "
+                    f"verified candidate tree '{target_tree}'. Evidence at: {chal_file}"
+                )
+
+        # 6. Check tree immutability during challenge
+        if not summary.tree_intact or (summary.candidate_tree_before != summary.candidate_tree_after):
+            reasons.append(
+                f"Candidate tree changed during the patch challenge (before: '{summary.candidate_tree_before}', "
+                f"after: '{summary.candidate_tree_after}', tree_intact={summary.tree_intact}). "
+                f"Clean verification and a new challenge are required. Evidence at: {chal_file}"
+            )
+
+        # 7. Check challenge status
+        if summary.status == "failed":
+            failed_checks = [c.test_id for c in summary.checks if c.candidate_outcome in ("failed", "error")]
+            failed_str = ", ".join(failed_checks) if failed_checks else (summary.details or "one or more checks failed")
+            reasons.append(
+                f"Patch challenge failed for candidate patch. Failed check(s): {failed_str}. "
+                f"Evidence at: {chal_file}"
+            )
+        elif summary.status == "passed":
+            pass
+        elif summary.status in ("inconclusive", "not_run"):
+            pass
+        else:
+            reasons.append(
+                f"Challenge artifact has invalid status '{summary.status}'. Evidence at: {chal_file}"
+            )
+
+    else:
+        # chal_file is NOT on disk
+        if manifest_has_challenge or recorded_challenge_status:
+            status_desc = recorded_challenge_status or "previously recorded"
+            reasons.append(
+                f"A previously recorded challenge (status: {status_desc}) is missing from artifacts: {chal_file}. "
+                "Deleting challenge artifacts is not permitted."
+            )
+        else:
+            # Genuinely never challenged / legacy run: continue with ordinary gates
+            pass
+
+    return reasons
+
+
 def check_publication_eligibility(
     base_reproduced: bool,
     candidate_reproducer_passed: bool,
@@ -133,6 +248,7 @@ def check_publication_eligibility(
     manifest_valid: bool = True,
     manifest_errors: list[str] | None = None,
     patch_file_exists: bool = True,
+    challenge_errors: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
     """
     Check all publication eligibility gates:
@@ -144,6 +260,7 @@ def check_publication_eligibility(
     6. Reproducer test was NOT tampered with or modified
     7. Patch satisfies edit policy (no protected files, within allowed_paths if specified)
     8. Stored artifacts and manifest are intact and match hashes
+    9. Patch challenge result (if executed or previously recorded) satisfies criteria
     """
     reasons: list[str] = []
 
@@ -183,6 +300,9 @@ def check_publication_eligibility(
             norm = cf.replace("\\", "/")
             if norm not in norm_allowed and not any(norm.startswith(a.rstrip("/") + "/") for a in norm_allowed):
                 reasons.append(f"File {cf} is outside the allowed edit scope: {allowed_paths}")
+
+    if challenge_errors:
+        reasons.extend(challenge_errors)
 
     eligible = len(reasons) == 0
     return eligible, reasons
@@ -340,6 +460,7 @@ def verify_run(
                 suite_passed = suite_val.passed
                 current_rep_hash = compute_test_hash(clean_patched, run_rec.reproducer_nodeid)
 
+        chal_errs = check_challenge_eligibility(run_rec, store, verified_tree_id=candidate_tree_id or run_rec.verified_tree_id)
         eligible, reasons = check_publication_eligibility(
             base_reproduced=base_reproduced,
             candidate_reproducer_passed=cand_rep_passed,
@@ -352,6 +473,7 @@ def verify_run(
             manifest_valid=manifest_ok,
             manifest_errors=manifest_errs,
             patch_file_exists=patch_file_exists,
+            challenge_errors=chal_errs,
         )
 
         if eligible and candidate_tree_id:

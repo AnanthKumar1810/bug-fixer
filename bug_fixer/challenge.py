@@ -339,7 +339,11 @@ def run_patch_challenge(
                 sha256=compute_sha256(raw),
                 byte_size=len(raw),
             )
+            existing_manifest.challenge_status = status
             store.store_manifest(run_id, existing_manifest)
+
+        run_rec.challenge_status = status
+        store.save_run(run_rec)
 
         return (status == "passed"), summary
 

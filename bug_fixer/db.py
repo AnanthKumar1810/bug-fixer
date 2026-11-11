@@ -66,6 +66,7 @@ class EvidenceStore:
                     publication_mode TEXT,
                     manifest_hash TEXT,
                     error_detail TEXT,
+                    challenge_status TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -112,6 +113,7 @@ class EvidenceStore:
                 ("verified_tree_id", "TEXT"),
                 ("publication_commit_sha", "TEXT"),
                 ("manifest_hash", "TEXT"),
+                ("challenge_status", "TEXT"),
             ]:
                 if col not in columns:
                     conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type};")
@@ -127,8 +129,8 @@ class EvidenceStore:
                     provenance, base_branch, reviewer, reviewer_status, branch_name,
                     pr_number, pr_url, branch_protection, publication_mode,
                     verified_tree_id, publication_commit_sha, manifest_hash,
-                    error_detail, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    error_detail, challenge_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     base_sha = CASE WHEN excluded.base_sha != '' THEN excluded.base_sha ELSE runs.base_sha END,
                     stage = excluded.stage,
@@ -152,6 +154,7 @@ class EvidenceStore:
                     publication_commit_sha = COALESCE(excluded.publication_commit_sha, runs.publication_commit_sha),
                     manifest_hash = COALESCE(excluded.manifest_hash, runs.manifest_hash),
                     error_detail = excluded.error_detail,
+                    challenge_status = COALESCE(excluded.challenge_status, runs.challenge_status),
                     updated_at = excluded.updated_at
             """, (
                 run.run_id, run.issue_url, run.issue_number, run.repo_owner, run.repo_name,
@@ -161,7 +164,7 @@ class EvidenceStore:
                 run.provenance, run.base_branch, run.reviewer, run.reviewer_status, run.branch_name,
                 run.pr_number, run.pr_url, run.branch_protection, run.publication_mode,
                 run.verified_tree_id, run.publication_commit_sha, run.manifest_hash,
-                run.error_detail, run.created_at or now, now
+                run.error_detail, getattr(run, "challenge_status", None), run.created_at or now, now
             ))
 
     def get_run(self, run_id: str) -> RunRecord | None:
@@ -199,6 +202,7 @@ class EvidenceStore:
                 publication_commit_sha=row["publication_commit_sha"] if "publication_commit_sha" in keys else None,
                 manifest_hash=row["manifest_hash"] if "manifest_hash" in keys else None,
                 error_detail=row["error_detail"],
+                challenge_status=row["challenge_status"] if "challenge_status" in keys else None,
             )
 
     def get_workspace_hash(self, run_id: str) -> str | None:

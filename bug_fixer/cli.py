@@ -26,6 +26,7 @@ from bug_fixer.publication import (
     build_publication_commit,
     create_draft_pr,
     push_candidate_branch,
+    redact_credentials,
     sync_publication_artifacts,
     verify_publication_artifacts,
     verify_publication_destination,
@@ -33,6 +34,7 @@ from bug_fixer.publication import (
 from bug_fixer.reporting import render_review_claims
 from bug_fixer.state_machine import BugFixerWorkflow
 from bug_fixer.verification import (
+    check_challenge_eligibility,
     check_publication_eligibility,
     extract_diff_changed_files,
     verify_run,
@@ -281,6 +283,7 @@ def main() -> None:
         patch_text = patch_file.read_text(encoding="utf-8") if patch_file.is_file() else ""
         changed_files = extract_diff_changed_files(patch_text)
 
+        chal_errors = check_challenge_eligibility(run_rec, store, verified_tree_id=run_rec.verified_tree_id)
         eligible, reasons = check_publication_eligibility(
             base_reproduced=True if run_rec.stage in (RunState.REPRODUCED, RunState.REPAIRING, RunState.VERIFIED, RunState.READY_FOR_REVIEW, RunState.PUBLISHED) else False,
             candidate_reproducer_passed=True if run_rec.stage in (RunState.VERIFIED, RunState.READY_FOR_REVIEW, RunState.PUBLISHED) else False,
@@ -293,6 +296,7 @@ def main() -> None:
             manifest_valid=manifest_ok,
             manifest_errors=manifest_errs,
             patch_file_exists=patch_file.is_file(),
+            challenge_errors=chal_errors,
         )
 
         rep_file = art_dir / "report.json"
@@ -361,6 +365,12 @@ def main() -> None:
                 print(f"  Strongest Challenge: {chal_data.get('strongest_survived_challenge')}")
             if chal_data.get("distinguishing_checks"):
                 print(f"  Distinguishing Tests: {', '.join(chal_data['distinguishing_checks'])}")
+        elif getattr(run_rec, "challenge_status", None):
+            print("\nPatch Challenge Info:")
+            print(f"  Status:             {run_rec.challenge_status.upper()} (recorded in store, artifact missing)")
+        else:
+            print("\nPatch Challenge Info:")
+            print("  Status:             NOT_RUN (optional challenge was not executed)")
         if run_rec.stage == RunState.PUBLISHED:
             claims = render_review_claims(
                 reviewer=run_rec.reviewer,
@@ -438,18 +448,13 @@ def main() -> None:
             print(f"Error: Run '{args.run}' not found in database.")
             sys.exit(1)
 
-        # 0. Destination verification check before any remote write
-        dest_ok, dest_msg = verify_publication_destination(args.remote, run_rec)
-        if not dest_ok:
-            print(f"Error: {dest_msg}")
-            sys.exit(1)
-
-        # Authoritative eligibility check
+        # 1. Authoritative eligibility check (including challenge check)
         manifest_ok, manifest_errs = store.verify_manifest(args.run)
         patch_file = settings.data_dir / "artifacts" / run_rec.run_id / "candidate.patch"
         patch_text = patch_file.read_text(encoding="utf-8") if patch_file.is_file() else ""
         changed_files = extract_diff_changed_files(patch_text)
 
+        chal_errors = check_challenge_eligibility(run_rec, store, verified_tree_id=run_rec.verified_tree_id)
         eligible, reasons = check_publication_eligibility(
             base_reproduced=True,
             candidate_reproducer_passed=True,
@@ -462,6 +467,7 @@ def main() -> None:
             manifest_valid=manifest_ok,
             manifest_errors=manifest_errs,
             patch_file_exists=patch_file.is_file(),
+            challenge_errors=chal_errors,
         )
 
         if not eligible or run_rec.stage not in (RunState.READY_FOR_REVIEW, RunState.PUBLISHED):
@@ -470,7 +476,7 @@ def main() -> None:
                 print(f"  - {r}")
             sys.exit(1)
 
-        # 1. Locate source repository
+        # 2. Locate source repository
         source_repo: Path | None = None
         if args.source:
             source_repo = Path(args.source).resolve()
@@ -487,7 +493,23 @@ def main() -> None:
             print(f"Error: Could not locate source repository for run '{args.run}'.")
             sys.exit(1)
 
-        # 2. Check candidate tree identity from independent Docker replay
+        # 3. Verify publication destination using the source repository context
+        dest_res = verify_publication_destination(
+            args.remote,
+            run_rec,
+            source_repo=source_repo,
+            confirm_remote=args.confirm_remote,
+        )
+        if not dest_res.is_valid:
+            print(f"Error: {dest_res.message}")
+            sys.exit(1)
+
+        verified_push_target = dest_res.resolved_destination
+        is_live_publication = dest_res.is_live
+        print(f"Using repository configuration from: {source_repo}")
+        print(f"Resolved publication destination: {redact_credentials(verified_push_target)}")
+
+        # 4. Check candidate tree identity from independent Docker replay
         if not run_rec.verified_tree_id:
             print("Run lacks verified candidate tree identity. Replaying verification in Docker...")
             ver_ok, ver_rep = verify_run(
@@ -502,7 +524,7 @@ def main() -> None:
                 sys.exit(1)
             run_rec = store.get_run(run_rec.run_id)
 
-        # 3. Build publication commit in a fresh disposable checkout of base_sha
+        # 5. Build publication commit in a fresh disposable checkout of base_sha
         branch_name = f"bug-fixer/{run_rec.run_id}"
         commit_msg = f"fix: resolve issue #{run_rec.issue_number} ({run_rec.run_id})\n\nCandidate patch verified by Bug Fixer."
 
@@ -520,38 +542,29 @@ def main() -> None:
                 print(f"Error building publication commit: {e}")
                 sys.exit(1)
 
-            # 4. Immediately before pushing, verify parent and tree against evidence
+            # 6. Immediately before pushing, verify parent and tree against evidence
             if run_rec.verified_tree_id and pub_tree_sha != run_rec.verified_tree_id:
                 print(f"Error: Publication commit tree ({pub_tree_sha}) does not match verified Docker replay tree ({run_rec.verified_tree_id}). Aborting publication.")
                 sys.exit(1)
 
-            # 5. Persist expected publication commit BEFORE pushing
-            run_rec.publication_commit_sha = pub_commit_sha
+            # 7. Persist expected publication commit BEFORE pushing (reuse if already recorded)
+            expected_commit = run_rec.publication_commit_sha or pub_commit_sha
+            run_rec.publication_commit_sha = expected_commit
             run_rec.branch_name = branch_name
             store.save_run(run_rec)
 
-            # 6. Check safety guard for real remote
-            remote_path = Path(args.remote)
-            remote_target = str(remote_path.resolve()) if remote_path.exists() else args.remote
-
-            is_remote_url = "github.com" in args.remote or (args.remote.startswith("http") and not args.remote.startswith("file"))
-            if is_remote_url and not args.confirm_remote:
-                print(f"CONFIRMATION REQUIRED: About to push to remote '{args.remote}'.")
-                print("To proceed, add the flag: --confirm-remote")
-                sys.exit(1)
-
-            print(f"Pushing branch '{branch_name}' (commit {pub_commit_sha[:8]}) to '{args.remote}'...")
+            print(f"Pushing branch '{branch_name}' (commit {expected_commit[:8]}) to '{redact_credentials(verified_push_target)}'...")
             try:
-                push_candidate_branch(tmp_checkout, remote_target, branch_name, expected_commit_sha=pub_commit_sha)
+                push_candidate_branch(tmp_checkout, verified_push_target, branch_name, expected_commit_sha=expected_commit)
             except PublicationError as e:
                 print(f"Error during push: {e}")
                 sys.exit(1)
 
-        # 7. Query remote head tree to compare with verified tree
+        # 8. Query remote head tree to compare with verified tree
         remote_tree_id = pub_tree_sha
         try:
             ls_proc = subprocess.run(
-                ["git", "ls-remote", str(remote_target), f"refs/heads/{branch_name}"],
+                ["git", "ls-remote", str(verified_push_target), f"refs/heads/{branch_name}"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -559,7 +572,7 @@ def main() -> None:
             if ls_proc.returncode == 0 and ls_proc.stdout.strip():
                 remote_commit = ls_proc.stdout.split()[0].strip()
                 parse_proc = subprocess.run(
-                    ["git", "--git-dir", str(remote_target), "rev-parse", f"{remote_commit}^{{tree}}"],
+                    ["git", "--git-dir", str(verified_push_target), "rev-parse", f"{remote_commit}^{{tree}}"],
                     capture_output=True,
                     text=True,
                     check=False,
@@ -569,11 +582,11 @@ def main() -> None:
         except Exception:
             pass
 
-        # 8. Draft PR creation or local simulation
+        # 9. Draft PR creation or local simulation
         pr_body_file = settings.data_dir / "artifacts" / run_rec.run_id / "pr-body.md"
         body = pr_body_file.read_text(encoding="utf-8") if pr_body_file.is_file() else "Automated repair"
 
-        token = os.environ.get("GITHUB_TOKEN")
+        token = os.environ.get("GITHUB_TOKEN") if is_live_publication else None
         try:
             pr_info = create_draft_pr(
                 owner=run_rec.repo_owner,
@@ -585,6 +598,7 @@ def main() -> None:
                 reviewer=args.reviewer or "",
                 api_token=token,
                 local_record_dir=settings.data_dir / "artifacts" / run_rec.run_id,
+                force_local_simulation=not is_live_publication,
             )
         except PublicationError as e:
             print(f"Error creating draft PR: {e}")

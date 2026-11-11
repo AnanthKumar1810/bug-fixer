@@ -105,6 +105,7 @@ class RunManifest(BaseModel):
     provenance: str
     created_at: str
     candidate_tree_id: str | None = None
+    challenge_status: str | None = None
     files: dict[str, ManifestEntry] = Field(default_factory=dict)
 
 
@@ -137,3 +138,4 @@ class RunRecord(BaseModel):
     publication_commit_sha: str | None = None
     manifest_hash: str | None = None
     error_detail: str | None = None
+    challenge_status: str | None = None

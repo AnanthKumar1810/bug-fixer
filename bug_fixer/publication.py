@@ -32,40 +32,194 @@ def verify_publication_artifacts(store: EvidenceStore, run: RunRecord, artifacts
     return actual_hash == run.candidate_patch_hash
 
 
+class DestinationResult(tuple):
+    """
+    Subclasses tuple so `is_valid, msg = verify_publication_destination(...)`
+    remains backwards-compatible while also exposing `.resolved_destination`,
+    `.is_live`, `.is_valid`, and `.message`.
+    """
+    def __new__(cls, valid: bool, message: str, resolved: str | None = None, is_live: bool = False):
+        instance = super().__new__(cls, (valid, message))
+        instance.is_valid = valid
+        instance.message = message
+        instance.resolved_destination = resolved
+        instance.is_live = is_live
+        return instance
+
+
+def redact_credentials(url: str) -> str:
+    """Redact user:password or token credentials from URLs."""
+    return re.sub(r"://([^@/]+)@", "://***@", str(url))
+
+
 def verify_publication_destination(
     remote_url_or_name: str,
     run: RunRecord,
-) -> tuple[bool, str]:
+    *,
+    source_repo: Path | str | None = None,
+    confirm_remote: bool = False,
+) -> DestinationResult:
     """
     Verify that intended publication remote matches the run's recorded
     repository identity (owner/repo) and base commit before any remote write.
-    Refuses cross-repository publication (e.g., publishing greeting fixture to psf/requests).
+    
+    1. Resolves remote aliases using the same repository context used for publication
+       via `git remote get-url --push --all <name>`.
+    2. Rejects multiple push destinations as ambiguous.
+    3. Redacts credentials from URLs in messages and output.
+    4. Distinguishes named remotes, direct GitHub URLs, and local filesystem paths.
+    5. For local simulation, verifies path identifies an actual local Git repository.
+    6. For live publication, matches owner/repo against recorded run and requires confirm_remote.
     """
-    remote_str = str(remote_url_or_name).strip()
+    raw_str = str(remote_url_or_name).strip()
+    if not raw_str:
+        return DestinationResult(False, "Publication remote destination cannot be empty.")
 
-    # Local bare repos or file URLs are allowed for local simulation
-    if not (remote_str.startswith("http://") or remote_str.startswith("https://") or "github.com" in remote_str or remote_str.startswith("git@")):
-        return True, "Local remote destination verified."
+    effective_dest: str | None = None
+    is_alias = False
 
-    # Parse remote owner/repo from URL
-    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", remote_str)
-    if not match:
-        return True, "Non-GitHub remote destination."
+    # 1. Resolve remote alias from source_repo if provided
+    repo_ctx: Path | None = Path(source_repo).resolve() if source_repo else None
+    if repo_ctx and repo_ctx.is_dir():
+        # Check if repo_ctx is a Git repository
+        is_git_ctx = (repo_ctx / ".git").is_dir() or (repo_ctx / "HEAD").is_file()
+        if not is_git_ctx:
+            rev_chk = subprocess.run(
+                ["git", "-C", str(repo_ctx), "rev-parse", "--git-dir"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            is_git_ctx = (rev_chk.returncode == 0)
 
-    target_owner, target_repo = match.groups()
-    expected_owner = run.repo_owner.lower()
-    expected_repo = run.repo_name.lower()
+        if is_git_ctx:
+            chk_proc = subprocess.run(
+                ["git", "-C", str(repo_ctx), "remote", "get-url", "--push", "--all", raw_str],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if chk_proc.returncode == 0 and chk_proc.stdout.strip():
+                push_urls = [line.strip() for line in chk_proc.stdout.splitlines() if line.strip()]
+                if len(push_urls) > 1:
+                    redacted_urls = ", ".join(redact_credentials(u) for u in push_urls)
+                    return DestinationResult(
+                        False,
+                        f"Remote alias '{raw_str}' has multiple configured push destinations ({redacted_urls}). "
+                        "Ambiguous push destination rejected before writing anywhere."
+                    )
+                effective_dest = push_urls[0]
+                is_alias = True
 
-    if target_owner.lower() != expected_owner or target_repo.lower() != expected_repo:
-        msg = (
-            f"Publication destination mismatch: Run '{run.run_id}' was recorded for repository "
-            f"'{run.repo_owner}/{run.repo_name}', but publication target remote is "
-            f"'{target_owner}/{target_repo}' ({remote_str}). "
-            f"Cross-repository remote write refused to prevent publishing patches to incorrect upstream."
+    # 2. If not a remote alias in source_repo, classify as direct URL or local path
+    if effective_dest is None:
+        is_url = (
+            raw_str.startswith("http://")
+            or raw_str.startswith("https://")
+            or raw_str.startswith("git@")
+            or raw_str.startswith("ssh://")
+            or raw_str.startswith("file://")
+            or "github.com" in raw_str
         )
-        return False, msg
+        if is_url:
+            effective_dest = raw_str
+        else:
+            local_candidate = Path(raw_str)
+            if local_candidate.exists():
+                effective_dest = str(local_candidate.resolve())
+            else:
+                if repo_ctx:
+                    return DestinationResult(
+                        False,
+                        f"Unknown remote alias or invalid destination '{raw_str}' in repository '{repo_ctx}'. "
+                        "Remote is not configured and does not identify an existing local path or valid URL."
+                    )
+                else:
+                    return DestinationResult(
+                        False,
+                        f"Destination '{raw_str}' does not exist and is not a valid URL or configured remote."
+                    )
 
-    return True, f"Destination matches recorded repository {run.repo_owner}/{run.repo_name}."
+    # 3. Handle file:// URLs
+    if effective_dest.startswith("file://"):
+        effective_dest = str(Path(effective_dest[7:]).resolve())
+
+    # 4. Check for GitHub destination
+    gh_match = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", effective_dest)
+    if gh_match:
+        target_owner, target_repo = gh_match.groups()
+        expected_owner = run.repo_owner.lower()
+        expected_repo = run.repo_name.lower()
+        redacted_dest = redact_credentials(effective_dest)
+
+        if target_owner.lower() != expected_owner or target_repo.lower() != expected_repo:
+            return DestinationResult(
+                False,
+                f"Publication destination mismatch: Run '{run.run_id}' was recorded for repository "
+                f"'{run.repo_owner}/{run.repo_name}', but publication target push destination is "
+                f"'{target_owner}/{target_repo}' ({redacted_dest}). "
+                "Cross-repository remote write refused to prevent publishing patches to incorrect upstream."
+            )
+
+        if not confirm_remote:
+            return DestinationResult(
+                False,
+                f"CONFIRMATION REQUIRED: About to push to remote '{redacted_dest}'. "
+                "To proceed, add the flag: --confirm-remote",
+                resolved=effective_dest,
+                is_live=True,
+            )
+
+        alias_msg = f" (via alias '{raw_str}')" if is_alias else ""
+        return DestinationResult(
+            True,
+            f"Destination matches recorded repository {run.repo_owner}/{run.repo_name}{alias_msg}.",
+            resolved=effective_dest,
+            is_live=True,
+        )
+
+    # 5. Check for non-GitHub network URL
+    if effective_dest.startswith(("http://", "https://", "git@", "ssh://")):
+        redacted_dest = redact_credentials(effective_dest)
+        if not confirm_remote:
+            return DestinationResult(
+                False,
+                f"CONFIRMATION REQUIRED: About to push to remote '{redacted_dest}'. "
+                "To proceed, add the flag: --confirm-remote",
+                resolved=effective_dest,
+                is_live=True,
+            )
+        return DestinationResult(
+            True,
+            f"Non-GitHub remote destination verified: {redacted_dest}",
+            resolved=effective_dest,
+            is_live=True,
+        )
+
+    # 6. Local filesystem path verification
+    local_p = Path(effective_dest).resolve()
+    if not local_p.exists():
+        return DestinationResult(False, f"Local destination path '{local_p}' does not exist.")
+
+    git_check = subprocess.run(
+        ["git", "-C", str(local_p), "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if git_check.returncode != 0:
+        return DestinationResult(
+            False,
+            f"Local destination path '{local_p}' exists but does not identify an actual local Git repository."
+        )
+
+    alias_msg = f" (via alias '{raw_str}')" if is_alias else ""
+    return DestinationResult(
+        True,
+        f"Local Git repository destination verified: {local_p}{alias_msg}.",
+        resolved=str(local_p),
+        is_live=False,
+    )
 
 
 def build_publication_commit(
@@ -319,15 +473,16 @@ def create_draft_pr(
     api_token: str | None = None,
     mock_client: Any | None = None,
     local_record_dir: Path | None = None,
+    force_local_simulation: bool = False,
 ) -> dict[str, Any]:
     """
     Open a draft PR on GitHub or record an honest local simulation.
     - If mock_client is provided, delegates to mock client.
-    - If no api_token is provided (local simulation), writes local draft PR record
-      and returns publication_mode='simulated_local', reviewer_status='not_requested',
-      and branch_protection='not_applicable'. Never invents a fake GitHub pull request URL.
-    - If api_token is provided, performs live GitHub operations: idempotent PR check,
-      reviewer request, and branch protection verification.
+    - If force_local_simulation is True or no api_token is provided (local simulation),
+      writes local draft PR record and returns publication_mode='simulated_local',
+      reviewer_status='not_requested', and branch_protection='not_applicable'.
+      Never invents a fake GitHub pull request URL.
+    - If api_token is provided and not force_local_simulation, performs live GitHub operations.
     """
     if mock_client is not None:
         res = mock_client.create_draft_pr(
@@ -344,8 +499,8 @@ def create_draft_pr(
             res["branch_protection"] = "verified_required" if res.get("branch_protection_verified") else "not_required"
         return res
 
-    # Local simulation mode (no live GitHub API token)
-    if not api_token or not api_token.strip():
+    # Local simulation mode (no live GitHub API token or forced local simulation)
+    if force_local_simulation or not api_token or not api_token.strip():
         claims = render_review_claims(
             reviewer=reviewer,
             reviewer_status="not_requested",

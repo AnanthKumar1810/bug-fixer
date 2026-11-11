@@ -40,13 +40,13 @@ def test_destination_verification_matches_or_rejects():
         updated_at="2026-11-11T00:00:00Z",
     )
 
-    # 1. Matching remote destination
-    ok1, msg1 = verify_publication_destination("https://github.com/fast-org/greeting-service.git", run)
+    # 1. Matching remote destination with confirmation
+    ok1, msg1 = verify_publication_destination("https://github.com/fast-org/greeting-service.git", run, confirm_remote=True)
     assert ok1 is True
     assert "matches recorded repository" in msg1
 
-    # 2. Case-insensitive matching
-    ok2, msg2 = verify_publication_destination("https://github.com/FAST-ORG/GREETING-SERVICE.git", run)
+    # 2. Case-insensitive matching with confirmation
+    ok2, msg2 = verify_publication_destination("https://github.com/FAST-ORG/GREETING-SERVICE.git", run, confirm_remote=True)
     assert ok2 is True
 
     # 3. Mismatched destination (e.g. attempting to push greeting service to psf/requests)
@@ -60,8 +60,10 @@ def test_destination_verification_matches_or_rejects():
     ok4, msg4 = verify_publication_destination(".bug-fixer-data/test_demo_remote.git", run)
     assert ok4 is True
 
-    ok5, msg5 = verify_publication_destination("origin", run)
-    assert ok5 is True
+    # 5. Unknown alias without repo context or unconfigured alias is rejected
+    ok5, msg5 = verify_publication_destination("unknown_remote_alias", run)
+    assert ok5 is False
+    assert "does not exist and is not a valid URL" in msg5
 
 
 def test_render_review_claims_honesty():
