@@ -30,7 +30,7 @@ def generate_candidate_patch(workspace_root: Path) -> str:
         ["git", "diff", "HEAD"],
         cwd=workspace_root,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     if proc.returncode == 0 and proc.stdout:
@@ -40,7 +40,7 @@ def generate_candidate_patch(workspace_root: Path) -> str:
         ["git", "diff"],
         cwd=workspace_root,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     return proc2.stdout or ""

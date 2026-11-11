@@ -14,6 +14,56 @@ from bug_fixer.workspace import Workspace
 MAX_EXCERPT_LINES = 50
 
 
+def called_function_excerpts(workspace, test_path, line_no, attempt):
+    """Locate imported functions exercised by the failing test, including package re-exports."""
+    try:
+        tree = ast.parse(workspace.read_text(test_path, record_tool=False))
+    except (ValueError, SyntaxError, OSError):
+        return []
+    test = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                 and n.name.startswith("test") and n.lineno <= line_no <= n.end_lineno), None)
+    if test is None:
+        return []
+    bindings = {}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module = node.module if isinstance(node, ast.ImportFrom) else alias.name
+                if module:
+                    bindings[alias.asname or alias.name] = (module, alias.name)
+    targets = set()
+    for call in (n.func for n in ast.walk(test) if isinstance(n, ast.Call)):
+        if isinstance(call, ast.Name) and call.id in bindings:
+            targets.add(bindings[call.id])
+        elif isinstance(call, ast.Attribute) and isinstance(call.value, ast.Name) and call.value.id in bindings:
+            targets.add((bindings[call.value.id][0], call.attr))
+    matches = []
+    for module, symbol in sorted(targets)[:5]:
+        rel = module.replace(".", "/")
+        direct = workspace.root / (rel + ".py")
+        folder = workspace.root / rel
+        paths = [direct] if direct.is_file() else []
+        if folder.is_dir():
+            from itertools import islice
+            paths.extend(islice(folder.glob("*.py"), 40))
+        for path in paths:
+            name = path.relative_to(workspace.root).as_posix()
+            try:
+                content = workspace.read_text(name, record_tool=False)
+                func = next((n for n in ast.parse(content).body
+                             if isinstance(n, ast.FunctionDef) and n.name == symbol), None)
+            except (OSError, SyntaxError, ValueError):
+                continue
+            if func:
+                start = max(func.lineno, func.end_lineno - MAX_EXCERPT_LINES + 1)
+                matches.append(PromptExcerpt(path=name, start_line=start, end_line=func.end_lineno,
+                    reason=f"Function {symbol} called by failing test {test.name}",
+                    content="".join(content.splitlines(True)[start-1:func.end_lineno]),
+                    content_hash=hashlib.sha256(content.encode()).hexdigest(), attempt=attempt))
+                break
+    return matches
+
+
 def is_test_file(path_str: str) -> bool:
     norm = path_str.replace("\\", "/").lower()
     parts = norm.split("/")
@@ -147,6 +197,10 @@ def collect_evidence_excerpts(
     # Priority 2: If no impl frames or only test frames, find callees imported by the test or caller
     if not impl_frames and test_frames:
         for t_path, t_line, t_func in test_frames:
+            for excerpt in called_function_excerpts(workspace, t_path, t_line, attempt):
+                if excerpt.path not in seen_paths:
+                    excerpts.append(excerpt)
+                    seen_paths.add(excerpt.path)
             callees = find_callee_files_from_ast(workspace, t_path)
             for c_path in callees:
                 if c_path not in seen_paths:

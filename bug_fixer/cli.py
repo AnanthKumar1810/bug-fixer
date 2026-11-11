@@ -338,17 +338,53 @@ def main() -> None:
 
         print("\n================ RUN INSPECTION REPORT ================")
         print(f"Run ID:            {run_rec.run_id}")
-        print(f"Issue:             {run_rec.issue_url} (#{run_rec.issue_number})")
-        print(f"Repository:        {run_rec.repo_owner}/{run_rec.repo_name}")
-        print(f"Provenance:        {run_rec.provenance}")
-        print(f"Base Branch:       {run_rec.base_branch}")
-        print(f"Base SHA:          {run_rec.base_sha}")
         print(f"Current Stage:     {run_rec.stage.value}")
         print(f"Status:            {run_rec.status}")
         print(f"Attempts:          {run_rec.attempts_used} / {run_rec.retry_budget}")
+
+        # 1. ISSUE
+        print("\n--- 1. ISSUE ---")
+        print(f"Issue:             {run_rec.issue_url} (#{run_rec.issue_number})")
+        print(f"Repository:        {run_rec.repo_owner}/{run_rec.repo_name}")
+        print(f"Base Branch:       {run_rec.base_branch}")
+        print(f"Base SHA:          {run_rec.base_sha}")
+        print(f"Provenance:        {run_rec.provenance}")
+
+        # 2. FAILING TEST
+        print("\n--- 2. FAILING TEST ---")
         print(f"Locked Test:       {run_rec.reproducer_nodeid}")
         print(f"Reproducer SHA256: {run_rec.reproducer_hash}")
+        fail_assertions = rep_data.get("review_answers", {}).get("1_what_failed_on_original_commit", {}).get("failing_assertions", [])
+        if fail_assertions:
+            print("Failing Assertions:")
+            for fa in fail_assertions:
+                print(f"  {fa}")
+
+        # 3. SOURCE EXCERPT
+        print("\n--- 3. SOURCE EXCERPT ---")
+        deliv = rep_data.get("review_answers", {}).get("2_what_evidence_did_qwen_receive", {}).get("delivered_excerpts", [])
+        if deliv:
+            for ex in deliv:
+                print(f"  - {ex.get('path')} (lines {ex.get('start_line')}-{ex.get('end_line')}) [{ex.get('content_hash', '')[:8]}] — {ex.get('reason')}")
+        else:
+            print("  (No excerpts delivered / baseline mode)")
+
+        # 4. CANDIDATE DIFF
+        print("\n--- 4. CANDIDATE DIFF ---")
+        print(f"Changed Files:     {', '.join(changed_files) or 'None'}")
         print(f"Patch SHA256:      {run_rec.candidate_patch_hash or 'None'}")
+        if patch_text.strip():
+            diff_lines = patch_text.strip().splitlines()
+            preview = "\n".join(diff_lines[:15])
+            print("Diff Preview:")
+            print(f"  {preview}")
+            if len(diff_lines) > 15:
+                print(f"  ... ({len(diff_lines) - 15} more lines in candidate.patch)")
+        else:
+            print("  (Empty patch)")
+
+        # 5. CLEAN REPLAY / VALIDATION
+        print("\n--- 5. CLEAN REPLAY / VALIDATION ---")
         print(f"Verified Tree ID:  {run_rec.verified_tree_id or 'None'}")
         print(f"Artifacts Dir:     {art_dir}")
         print(f"Manifest Status:   {'[PASS] Intact' if manifest_ok else '[FAIL] Missing or tampered (' + '; '.join(manifest_errs) + ')'}")
@@ -357,38 +393,31 @@ def main() -> None:
             print("Disqualifications:")
             for r in reasons:
                 print(f"  - {r}")
+
         if chal_data:
-            print("\nPatch Challenge Info:")
-            print(f"  Status:             {chal_data.get('status', 'N/A').upper()} ({chal_data.get('details', '')})")
-            print(f"  Tree Immutability:  {'PASSED' if chal_data.get('tree_intact') else 'FAILED'}")
+            print(f"Patch Challenge:   {chal_data.get('status', 'N/A').upper()} ({chal_data.get('details', '')})")
+            print(f"Tree Immutability: {'PASSED' if chal_data.get('tree_intact') else 'FAILED'}")
             if chal_data.get("strongest_survived_challenge"):
-                print(f"  Strongest Challenge: {chal_data.get('strongest_survived_challenge')}")
-            if chal_data.get("distinguishing_checks"):
-                print(f"  Distinguishing Tests: {', '.join(chal_data['distinguishing_checks'])}")
-        elif getattr(run_rec, "challenge_status", None):
-            print("\nPatch Challenge Info:")
-            print(f"  Status:             {run_rec.challenge_status.upper()} (recorded in store, artifact missing)")
-        else:
-            print("\nPatch Challenge Info:")
-            print("  Status:             NOT_RUN (optional challenge was not executed)")
+                print(f"Strongest Survived: {chal_data.get('strongest_survived_challenge')}")
+
+        # 6. REVIEW STATUS
+        print("\n--- 6. REVIEW STATUS ---")
+        claims = render_review_claims(
+            reviewer=run_rec.reviewer,
+            reviewer_status=run_rec.reviewer_status,
+            publication_mode=run_rec.publication_mode,
+            branch_protection=run_rec.branch_protection,
+            is_published=(run_rec.stage == RunState.PUBLISHED),
+        )
+        print(f"Publication Mode:  {run_rec.publication_mode or 'pending'}")
+        print(f"Reviewer:          {run_rec.reviewer or 'None'}")
+        print(f"Reviewer Status:   {run_rec.reviewer_status}")
+        print(f"Branch Protection: {run_rec.branch_protection}")
+        print(f"Review Enforcement: {claims['summary_text']}")
         if run_rec.stage == RunState.PUBLISHED:
-            claims = render_review_claims(
-                reviewer=run_rec.reviewer,
-                reviewer_status=run_rec.reviewer_status,
-                publication_mode=run_rec.publication_mode,
-                branch_protection=run_rec.branch_protection,
-                is_published=True,
-            )
-            print("\nPublication Info:")
-            print(f"  Mode:               {run_rec.publication_mode or 'N/A'}")
-            print(f"  Branch:             {run_rec.branch_name}")
-            print(f"  Publication Commit: {run_rec.publication_commit_sha or 'N/A'}")
-            print(f"  Verified Tree ID:   {run_rec.verified_tree_id or 'N/A'}")
-            print(f"  PR URL:             {run_rec.pr_url}")
-            print(f"  Reviewer:           {run_rec.reviewer or 'None'}")
-            print(f"  Reviewer Status:    {run_rec.reviewer_status}")
-            print(f"  Branch Protection:  {run_rec.branch_protection}")
-            print(f"  Review Enforcement: {claims['summary_text']}")
+            print(f"Branch:            {run_rec.branch_name}")
+            print(f"Publication Commit: {run_rec.publication_commit_sha or 'N/A'}")
+            print(f"PR URL:            {run_rec.pr_url}")
         sys.exit(0)
 
     elif args.command == "verify":

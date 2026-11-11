@@ -195,6 +195,41 @@ def extract_fallback_tool_calls(text: str) -> list[dict[str, Any]]:
         except Exception:
             pass
 
+    if tool_calls:
+        return tool_calls
+
+    # 5. CLI-style command invocations, e.g.:
+    # `replace_line more_itertools/recipes.py 156 "return islice(...)"`
+    cli_line_pat = re.compile(
+        r"[`']?replace_line[`']?\s+([a-zA-Z0-9_\-\./\\]+)\s+(\d+)\s+[\"'](.*?)[\"']",
+        re.DOTALL
+    )
+    for match in cli_line_pat.finditer(text):
+        tool_calls.append({
+            "name": "replace_line",
+            "arguments": {
+                "relative_path": match.group(1).strip(),
+                "line": int(match.group(2)),
+                "new": match.group(3),
+            }
+        })
+
+    # CLI-style replace_text, e.g.:
+    # `replace_text path "old" "new"`
+    cli_text_pat = re.compile(
+        r"[`']?replace_text[`']?\s+([a-zA-Z0-9_\-\./\\]+)\s+[\"'](.*?)[\"']\s+[\"'](.*?)[\"']",
+        re.DOTALL
+    )
+    for match in cli_text_pat.finditer(text):
+        tool_calls.append({
+            "name": "replace_text",
+            "arguments": {
+                "relative_path": match.group(1).strip(),
+                "old": match.group(2),
+                "new": match.group(3),
+            }
+        })
+
     return tool_calls
 
 
