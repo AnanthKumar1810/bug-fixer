@@ -126,5 +126,73 @@ Inspect Section 5 of `.bug-fixer-data/artifacts/run_5525c66d9a46/pr-body.md` or 
 Attempting to push fixture run `run_5525c66d9a46` (`fast-org/greeting-service`) to an upstream remote stops immediately before any network write:
 ```bash
 bug-fixer publish --run run_5525c66d9a46 --remote https://github.com/psf/requests.git
-# Output: Error: Publication destination mismatch: Run 'run_5525c66d9a46' was recorded for repository 'fast-org/greeting-service', but publication target remote is 'psf/requests'. Cross-repository remote write refused.
+# Output: Error: Publication destination mismatch: Run 'run_5525c66d9a46' was recorded for repository 'fast-org/greeting-service', but publication target push destination is 'psf/requests' (https://github.com/psf/requests.git). Cross-repository remote write refused.
 ```
+
+---
+
+## 6. Demonstration: Failed Challenge Blocks Publication (10 seconds)
+
+Inspect run `run_demo_failed_chal`, where the candidate patch passed the initial reproducer but failed the generalization patch challenge:
+
+```bash
+bug-fixer show --run run_demo_failed_chal
+```
+**Output:**
+```
+Eligibility Gate:  [INELIGIBLE]
+Disqualifications:
+  - Patch challenge failed for candidate patch. Failed check(s): tests/test_greeting.py::test_formatter_direct. Evidence at: ...\artifacts\run_demo_failed_chal\challenge.json
+
+Patch Challenge Info:
+  Status:             FAILED (Candidate patch failed direct callee check)
+  Tree Immutability:  PASSED
+```
+
+Attempting publication immediately halts without any Git push or PR creation:
+```bash
+bug-fixer publish --run run_demo_failed_chal --remote .bug-fixer-data/test_demo_remote.git
+```
+**Output:**
+```
+Error: Run 'run_demo_failed_chal' is NOT eligible for publication.
+  - Patch challenge failed for candidate patch. Failed check(s): tests/test_greeting.py::test_formatter_direct. Evidence at: ...\artifacts\run_demo_failed_chal\challenge.json
+```
+
+---
+
+## 7. Demonstration: Misleading `origin` Push URL Blocked (10 seconds)
+
+When a local repository's `origin` remote has an innocent fetch URL (`fast-org/greeting-service.git`) but its effective **push URL** is pointed at a divergent repository (`psf/requests.git`):
+
+```bash
+bug-fixer publish --run run_5525c66d9a46 --remote origin --source .bug-fixer-data/demo_misleading_origin
+```
+**Output:**
+```
+Error: Publication destination mismatch: Run 'run_5525c66d9a46' was recorded for repository 'fast-org/greeting-service', but publication target push destination is 'psf/requests' (https://github.com/psf/requests.git). Cross-repository remote write refused to prevent publishing patches to incorrect upstream.
+```
+Bug Fixer inspects effective push URLs with `git remote get-url --push --all origin` inside the repository context, detects the mismatch, and aborts before writing anything.
+
+---
+
+## 8. Summary: Safe Local Demo & Path to Real GitHub PR
+
+### Safe Local Demo (Zero Network Writes)
+```bash
+bug-fixer publish --run run_5525c66d9a46 --remote .bug-fixer-data/test_demo_remote.git
+```
+- Pushes commit `5b5e7129` to the local bare repository.
+- Generates `local_draft_pr.json` truthfully labeled: *"Simulated local publication. No GitHub reviewer was requested. Branch protection is not applicable."*
+
+### One Remaining Operator Step for a Real GitHub PR
+To publish a live draft PR to an actual remote repository on GitHub:
+1. Export a valid GitHub token:
+   ```bash
+   export GITHUB_TOKEN="ghp_YourGitHubToken"   # or set in environment
+   ```
+2. Run `publish` with the explicit confirmation flag:
+   ```bash
+   bug-fixer publish --run run_5525c66d9a46 --remote https://github.com/fast-org/greeting-service.git --reviewer "lead-architect" --confirm-remote
+   ```
+   The `--confirm-remote` flag ensures operator consent before any live network write.
