@@ -4,7 +4,36 @@ This demo presents the complete, auditable issue-to-PR workflow for **Bug Fixer*
 
 ---
 
-## 1. Issue and Original Defect (30 seconds)
+## 0. Primary Real-Repository Demonstration: `AnanthKumar1810/ml-code-review-assistant` (45 seconds)
+
+Inspect the complete 7-part Judge Decision Trace for the automated repair on public repository [`AnanthKumar1810/ml-code-review-assistant`](https://github.com/AnanthKumar1810/ml-code-review-assistant):
+
+```powershell
+python -m bug_fixer.cli show --run run_21c66b738258
+```
+
+**Key Evidence Highlights:**
+1. **Issue**: `https://github.com/AnanthKumar1810/ml-code-review-assistant/issues/1` (pinned base commit `5f13700f3786c144f046a1f301fa0b63bdaef294`).
+2. **Locked Test**: `tests/test_project4.py::test_detect_mutable_default_dict` (SHA256: `39ce536b...`).
+3. **Traceback-Guided Retrieval**: Automatically extracted callee `src/patterns.py` (lines 1–50, SHA256: `f595132f`) into prompt context.
+4. **Targeted Patch**: Modified line 32 in `src/patterns.py` (`regex=r"def\s+\w+\([^)]*=\s*\[\]|\{\}"`) to detect both list and dictionary mutable defaults without modifying the test file.
+5. **Clean Replay & Validation**: Docker reproduced base bug, applied patch cleanly, passed candidate reproducer, and verified all 12 suite tests pass.
+6. **Patch Challenge**: Survived distinguishing input variation test across multi-parameter signatures (`Intact: YES`).
+7. **Safe Publication**: Built publication commit `323e458f` in clean checkout, verified remote head tree matches Docker replay tree byte-for-byte (`580554c45194...`), and generated draft PR artifact.
+
+Replay this run independently in Docker:
+```powershell
+python -m bug_fixer.cli verify --run run_21c66b738258 --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
+```
+
+Run the generalization patch challenge:
+```powershell
+python -m bug_fixer.cli challenge --run run_21c66b738258 --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
+```
+
+---
+
+## 1. Issue and Original Defect (Fixture Run) (30 seconds)
 
 Inspect the recorded run `run_5525c66d9a46` for issue [#103](https://github.com/fast-org/greeting-service/issues/103):
 
