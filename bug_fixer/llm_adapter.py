@@ -127,6 +127,44 @@ def parse_diagnosis(text: str) -> Diagnosis:
     )
 
 
+def extract_balanced_json(text: str, start_idx: int = 0) -> tuple[dict[str, Any] | None, int]:
+    """Extract a balanced JSON object starting at or after start_idx, correctly handling nested braces and strings."""
+    idx = text.find("{", start_idx)
+    while idx != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        end_idx = -1
+        for i in range(idx, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i + 1
+                        break
+        if end_idx != -1:
+            try:
+                candidate = json.loads(text[idx:end_idx])
+                if isinstance(candidate, dict):
+                    return candidate, end_idx
+            except Exception:
+                pass
+        idx = text.find("{", idx + 1)
+    return None, -1
+
+
 def extract_fallback_tool_calls(text: str) -> list[dict[str, Any]]:
     """Extract tool calls if model outputs them formatted in JSON markdown blocks or inline."""
     tool_calls: list[dict[str, Any]] = []
@@ -162,7 +200,16 @@ def extract_fallback_tool_calls(text: str) -> list[dict[str, Any]]:
         except Exception:
             pass
 
-    # 3. Look for tool_name {"relative_path": "...", ...} or `tool_name` with arguments: `{"relative_path": ...}`
+    # 3. Look for tool name followed by balanced JSON arguments (supports braces in format strings)
+    tool_name_pat = re.compile(r"[`']?(replace_text|replace_line|write_file|read_file|search_files)[`']?")
+    for match in tool_name_pat.finditer(text):
+        name = match.group(1)
+        args, _ = extract_balanced_json(text, match.end())
+        if args and any(k in args for k in ("relative_path", "query", "old", "content")):
+            tool_calls.append({"name": name, "arguments": args})
+            return tool_calls
+
+    # 4. Look for tool_name {"relative_path": "...", ...} or `tool_name` with arguments: `{"relative_path": ...}`
     inline_pat = re.compile(
         r"[`']?(replace_text|replace_line|write_file|read_file|search_files)[`']?(?:[^\n\r{]*?)\s*[`']?(\{[^{}\n\r]*\"(?:relative_path|query)\"[^{}\n\r]*\})[`']?",
         re.DOTALL
@@ -173,25 +220,6 @@ def extract_fallback_tool_calls(text: str) -> list[dict[str, Any]]:
         try:
             args = json.loads(raw_args)
             tool_calls.append({"name": name, "arguments": args})
-        except Exception:
-            pass
-
-    if tool_calls:
-        return tool_calls
-
-    # 4. Multi-line JSON block following tool name
-    multiline_pat = re.compile(
-        r"[`']?(replace_text|replace_line|write_file|read_file|search_files)[`']?(?:[^\n\r{]*?)\s*[`']?(\{.*?\})[`']?",
-        re.DOTALL
-    )
-    for match in multiline_pat.finditer(text):
-        name = match.group(1)
-        raw_args = match.group(2)
-        try:
-            args = json.loads(raw_args)
-            if "relative_path" in args or "query" in args:
-                tool_calls.append({"name": name, "arguments": args})
-                break
         except Exception:
             pass
 
