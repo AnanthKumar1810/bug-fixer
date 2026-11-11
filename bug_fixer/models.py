@@ -34,6 +34,7 @@ class IssueInfo(BaseModel):
 
 
 class TestCaseResult(BaseModel):
+    __test__ = False
     nodeid: str
     file: str
     name: str

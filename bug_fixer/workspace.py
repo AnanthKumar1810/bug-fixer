@@ -169,11 +169,47 @@ class Workspace:
             if not old or len(old.encode("utf-8")) > self.max_file_bytes:
                 raise WorkspaceError("Replacement source must be nonempty and within the file size limit")
             content = self.read_text(relative_path, record_tool=False)
-            if content.count(old) != 1:
-                raise WorkspaceError("Replacement source must occur exactly once")
-            res = self.write_text(relative_path, content.replace(old, new, 1))
-            self._record_tool_call("replace_text", path=relative_path, status="ok")
-            return res
+
+            # 1. Exact match
+            if content.count(old) == 1:
+                res = self.write_text(relative_path, content.replace(old, new, 1))
+                self._record_tool_call("replace_text", path=relative_path, status="ok")
+                return res
+
+            # 2. Line ending normalized match (CRLF vs LF)
+            norm_content = content.replace("\r\n", "\n")
+            norm_old = old.replace("\r\n", "\n")
+            norm_new = new.replace("\r\n", "\n")
+            if norm_content.count(norm_old) == 1:
+                updated = norm_content.replace(norm_old, norm_new, 1)
+                res = self.write_text(relative_path, updated)
+                self._record_tool_call("replace_text", path=relative_path, status="ok")
+                return res
+
+            # 3. Strip trailing whitespace per line match
+            c_lines = norm_content.splitlines(keepends=True)
+            o_lines = [l.rstrip() for l in norm_old.splitlines()]
+            matches = []
+            for i in range(len(c_lines) - len(o_lines) + 1):
+                window = [c_lines[i + k].rstrip() for k in range(len(o_lines))]
+                if window == o_lines:
+                    matches.append(i)
+
+            if len(matches) == 1:
+                idx = matches[0]
+                leading_lines = c_lines[:idx]
+                trailing_lines = c_lines[idx + len(o_lines):]
+                replacement_block = norm_new if norm_new.endswith("\n") else norm_new + "\n"
+                updated = "".join(leading_lines) + replacement_block + "".join(trailing_lines)
+                res = self.write_text(relative_path, updated)
+                self._record_tool_call("replace_text", path=relative_path, status="ok")
+                return res
+
+            occurrences = content.count(old)
+            if occurrences == 0:
+                raise WorkspaceError(f"Replacement source not found in {relative_path} (0 matches)")
+            else:
+                raise WorkspaceError(f"Replacement source is ambiguous in {relative_path} ({occurrences} matches; must occur exactly once)")
         except Exception as exc:
             self._record_tool_call("replace_text", path=relative_path, status="error", error=str(exc))
             raise

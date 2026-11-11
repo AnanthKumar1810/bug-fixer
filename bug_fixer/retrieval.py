@@ -338,16 +338,26 @@ def build_compact_repair_packet(
 
     if earlier_attempts:
         lines.append(f"\n=== PREVIOUS ATTEMPTS IN THIS RUN (ATTEMPT {attempt}) ===")
+        has_syntax_or_indentation_err = False
         for prev in earlier_attempts:
             lines.append(f"- Attempt {prev.get('attempt')}: Edited {prev.get('changed_files', [])}, Result: {prev.get('status')} (Contradicted expected outcome)")
             if prev.get("failures"):
                 for fail in prev.get("failures")[:3]:
                     lines.append(f"  * Suite/regression failure: {fail}")
+                    fail_str = str(fail)
+                    if any(err in fail_str for err in ("SyntaxError", "IndentationError", "TabError")):
+                        has_syntax_or_indentation_err = True
             if prev.get("patch_diff"):
                 lines.append(f"  * Rejected Patch from Attempt {prev.get('attempt')}:\n```diff\n{prev.get('patch_diff')}\n```")
             if prev.get("unresolved_question"):
                 lines.append(f"  * Feedback: {prev.get('unresolved_question')}")
-        lines.append("\nCRITICAL DIRECTIVE: Do NOT repeat the rejected edits shown above. They failed validation. Formulate a different hypothesis.")
+                if any(err in str(prev.get("unresolved_question")) for err in ("SyntaxError", "IndentationError", "TabError")):
+                    has_syntax_or_indentation_err = True
+
+        if has_syntax_or_indentation_err:
+            lines.append("\nCRITICAL DIRECTIVE: A previous attempt produced a SYNTAX or INDENTATION error. Your target file or function choice may be correct, but the patch formatting was invalid. Do NOT abandon the repair concept; instead, write clean, valid, correctly indented Python code without formatting syntax defects.")
+        else:
+            lines.append("\nCRITICAL DIRECTIVE: Do NOT repeat the rejected edits shown above. They failed behavioral validation. Formulate a different hypothesis or refine the implementation logic.")
 
     lines.append("\n=== RELEVANT SOURCE EXCERPTS (FRESH) ===")
     if not excerpts:

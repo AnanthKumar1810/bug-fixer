@@ -618,12 +618,71 @@ def verify_complete_pr_package(
         state2_val = validate_workspace(state2_dir, selected_tests=[reproducer_nodeid], runner=runner, image=image)
         if state2_val.passed:
             return False, {
-                "error": "State 2 failed: reproducer test unexpectedly passed on base commit (defect not reproduced)"
+                "error": "State 2 failed: reproducer test unexpectedly passed on base commit (defect not reproduced)",
+                "state2_outcome": "unexpected_pass",
             }
-        if state2_val.exit_code in (2, 4) or state2_val.reproducer_outcome == "missing_dependency":
+        if state2_val.reproducer_outcome == "timeout" or any("Timed out" in (c.output or "") for c in state2_val.checks):
             return False, {
-                "error": f"State 2 failed: infrastructure error during reproduction (exit={state2_val.exit_code}): {state2_val.issues}"
+                "error": "State 2 failed: reproducer test timed out on base commit",
+                "state2_outcome": "timeout",
             }
+        if state2_val.exit_code in (2, 4, 5) or state2_val.reproducer_outcome == "missing_dependency":
+            return False, {
+                "error": f"State 2 failed: infrastructure error during reproduction (exit={state2_val.exit_code}): {state2_val.issues}",
+                "state2_outcome": "infrastructure_error",
+            }
+
+        # Check test identity
+        matching_tc = None
+        for tc in state2_val.test_cases:
+            if tc.nodeid == reproducer_nodeid or tc.name in reproducer_nodeid or reproducer_nodeid.endswith(tc.name):
+                matching_tc = tc
+                break
+
+        if matching_tc is None and state2_val.test_cases:
+            return False, {
+                "error": f"State 2 failed: expected reproducer node '{reproducer_nodeid}' was not executed",
+                "state2_outcome": "test_identity_mismatch",
+            }
+
+        # Check execution phase: must not fail during fixture setup or collection
+        if matching_tc and matching_tc.outcome == "error":
+            return False, {
+                "error": f"State 2 failed: reproducer failed during setup/fixture phase rather than test call execution: {matching_tc.message}",
+                "state2_outcome": "setup_failure",
+            }
+
+        # Check stable failure signature and reject unrelated exceptions
+        all_output = "\n".join(c.output for c in state2_val.checks)
+        tc_msg = matching_tc.message if matching_tc else ""
+        is_assertion_failure = (
+            "AssertionError" in all_output
+            or "AssertionError" in tc_msg
+            or any("AssertionError" in a for a in state2_val.failing_assertions)
+        )
+
+        unrelated_exceptions = [
+            a for a in state2_val.failing_assertions
+            if ("Error" in a or "Exception" in a) and "AssertionError" not in a
+        ]
+
+        if not is_assertion_failure or (unrelated_exceptions and not is_assertion_failure):
+            unrelated = unrelated_exceptions[0] if unrelated_exceptions else (state2_val.failing_assertions[0] if state2_val.failing_assertions else "unhandled exception")
+            return False, {
+                "error": f"State 2 failed: reproducer failed with unrelated exception instead of expected assertion failure: {unrelated}",
+                "state2_outcome": "unrelated_exception",
+                "failing_assertions": state2_val.failing_assertions,
+            }
+
+        expected_sig = manifest.get("expected_failure_signature") or manifest.get("expected_assertion")
+        if expected_sig and expected_sig not in all_output and expected_sig not in tc_msg:
+            return False, {
+                "error": f"State 2 failed: reproducer assertion did not match expected failure signature '{expected_sig}'",
+                "state2_outcome": "signature_mismatch",
+                "failing_assertions": state2_val.failing_assertions,
+            }
+
+        state2_failing_assertions = state2_val.failing_assertions or ([expected_sig] if expected_sig else ["AssertionError"])
 
         # ---------------------------------------------------------
         # State 3: Base + Full complete PR patch -> Everything passes
@@ -716,7 +775,7 @@ def verify_complete_pr_package(
             "state1_base_passed": state1_val.passed,
             "state1_test_count": state1_test_count,
             "state2_reproduced": not state2_val.passed,
-            "state2_failing_assertions": state2_val.failing_assertions,
+            "state2_failing_assertions": state2_failing_assertions,
             "state3_reproducer_passed": state3_rep_val.passed,
             "state3_suite_passed": state3_suite_val.passed,
             "state3_test_count": state3_test_count,
