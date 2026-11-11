@@ -102,9 +102,15 @@ class EvidenceStore:
             for col, col_type in [
                 ("provenance", "TEXT DEFAULT 'fixture'"),
                 ("base_branch", "TEXT DEFAULT 'main'"),
+                ("reviewer", "TEXT"),
                 ("reviewer_status", "TEXT"),
+                ("branch_name", "TEXT"),
+                ("pr_number", "INTEGER"),
+                ("pr_url", "TEXT"),
                 ("branch_protection", "TEXT"),
                 ("publication_mode", "TEXT"),
+                ("verified_tree_id", "TEXT"),
+                ("publication_commit_sha", "TEXT"),
                 ("manifest_hash", "TEXT"),
             ]:
                 if col not in columns:
@@ -119,9 +125,10 @@ class EvidenceStore:
                     base_sha, stage, status, reproducer_nodeid, reproducer_hash,
                     candidate_patch_hash, retry_budget, attempts_used, workspace_hash,
                     provenance, base_branch, reviewer, reviewer_status, branch_name,
-                    pr_url, branch_protection, publication_mode, manifest_hash,
+                    pr_number, pr_url, branch_protection, publication_mode,
+                    verified_tree_id, publication_commit_sha, manifest_hash,
                     error_detail, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     base_sha = CASE WHEN excluded.base_sha != '' THEN excluded.base_sha ELSE runs.base_sha END,
                     stage = excluded.stage,
@@ -137,9 +144,12 @@ class EvidenceStore:
                     reviewer = COALESCE(excluded.reviewer, runs.reviewer),
                     reviewer_status = COALESCE(excluded.reviewer_status, runs.reviewer_status),
                     branch_name = COALESCE(excluded.branch_name, runs.branch_name),
+                    pr_number = COALESCE(excluded.pr_number, runs.pr_number),
                     pr_url = COALESCE(excluded.pr_url, runs.pr_url),
                     branch_protection = COALESCE(excluded.branch_protection, runs.branch_protection),
                     publication_mode = COALESCE(excluded.publication_mode, runs.publication_mode),
+                    verified_tree_id = COALESCE(excluded.verified_tree_id, runs.verified_tree_id),
+                    publication_commit_sha = COALESCE(excluded.publication_commit_sha, runs.publication_commit_sha),
                     manifest_hash = COALESCE(excluded.manifest_hash, runs.manifest_hash),
                     error_detail = excluded.error_detail,
                     updated_at = excluded.updated_at
@@ -149,7 +159,8 @@ class EvidenceStore:
                 run.status, run.reproducer_nodeid, run.reproducer_hash,
                 run.candidate_patch_hash, run.retry_budget, run.attempts_used, workspace_hash,
                 run.provenance, run.base_branch, run.reviewer, run.reviewer_status, run.branch_name,
-                run.pr_url, run.branch_protection, run.publication_mode, run.manifest_hash,
+                run.pr_number, run.pr_url, run.branch_protection, run.publication_mode,
+                run.verified_tree_id, run.publication_commit_sha, run.manifest_hash,
                 run.error_detail, run.created_at or now, now
             ))
 
@@ -180,9 +191,12 @@ class EvidenceStore:
                 reviewer=row["reviewer"],
                 reviewer_status=row["reviewer_status"] if "reviewer_status" in keys else None,
                 branch_name=row["branch_name"],
+                pr_number=row["pr_number"] if "pr_number" in keys else None,
                 pr_url=row["pr_url"],
                 branch_protection=row["branch_protection"] if "branch_protection" in keys else None,
                 publication_mode=row["publication_mode"] if "publication_mode" in keys else None,
+                verified_tree_id=row["verified_tree_id"] if "verified_tree_id" in keys else None,
+                publication_commit_sha=row["publication_commit_sha"] if "publication_commit_sha" in keys else None,
                 manifest_hash=row["manifest_hash"] if "manifest_hash" in keys else None,
                 error_detail=row["error_detail"],
             )

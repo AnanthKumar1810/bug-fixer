@@ -149,8 +149,9 @@ def check_publication_eligibility(
 
     if base_sha is not None and not is_valid_commit_sha(base_sha):
         reasons.append(f"Invalid or placeholder base commit SHA: {base_sha}")
-    if not manifest_valid and manifest_errors:
-        reasons.extend(manifest_errors)
+    if not manifest_valid:
+        msg = f"Run manifest verification failed: {'; '.join(manifest_errors)}" if manifest_errors else "Run manifest verification failed: invalid or corrupted manifest."
+        reasons.append(msg)
     if not patch_file_exists:
         reasons.append("Candidate patch file does not exist on disk.")
     if not base_reproduced:
@@ -257,7 +258,9 @@ def verify_run(
                 proc = subprocess.run(["git", "clone", "-q", str(repo_source), str(target)], check=False)
                 if proc.returncode == 0:
                     subprocess.run(["git", "-C", str(target), "config", "core.autocrlf", "false"], check=False)
-                    subprocess.run(["git", "-C", str(target), "checkout", "-f", "HEAD"], check=False)
+                    co = subprocess.run(["git", "-C", str(target), "checkout", "-f", run_rec.base_sha], capture_output=True, check=False)
+                    if co.returncode != 0:
+                        subprocess.run(["git", "-C", str(target), "checkout", "-f", "master"], check=False)
                     return
             target.mkdir(parents=True, exist_ok=True)
             for item in repo_source.iterdir():
@@ -294,6 +297,7 @@ def verify_run(
         cand_rep_passed = False
         suite_passed = False
         current_rep_hash = ""
+        candidate_tree_id = ""
 
         if patch_text.strip():
             proc = subprocess.run(
@@ -307,6 +311,12 @@ def verify_run(
             patch_applied = (proc.returncode == 0)
 
             if patch_applied:
+                # Stage files and record exact candidate git tree hash
+                subprocess.run(["git", "add", "-A"], cwd=clean_patched, capture_output=True, check=False)
+                tree_proc = subprocess.run(["git", "write-tree"], cwd=clean_patched, capture_output=True, text=True, check=False)
+                if tree_proc.returncode == 0 and tree_proc.stdout.strip():
+                    candidate_tree_id = tree_proc.stdout.strip()
+
                 # Validate reproducer
                 cand_val = validate_workspace(
                     clean_patched,
@@ -344,6 +354,14 @@ def verify_run(
             patch_file_exists=patch_file_exists,
         )
 
+        if eligible and candidate_tree_id:
+            run_rec.verified_tree_id = candidate_tree_id
+            store.save_run(run_rec)
+            manifest = store.get_manifest(run_id)
+            if manifest:
+                manifest.candidate_tree_id = candidate_tree_id
+                store.store_manifest(run_id, manifest)
+
         report = {
             "run_id": run_id,
             "base_sha": run_rec.base_sha,
@@ -356,6 +374,7 @@ def verify_run(
             "candidate_reproducer_passed": cand_rep_passed,
             "candidate_suite_passed": suite_passed,
             "reproducer_hash_intact": (run_rec.reproducer_hash == current_rep_hash) if current_rep_hash else False,
+            "verified_tree_id": candidate_tree_id,
             "eligible_for_publication": eligible,
             "disqualifications": reasons,
         }

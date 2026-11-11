@@ -8,18 +8,29 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import httpx
 
+from bug_fixer.challenge import (
+    format_challenge_markdown,
+    format_challenge_table,
+    run_patch_challenge,
+)
 from bug_fixer.config import Settings
 from bug_fixer.db import EvidenceStore
 from bug_fixer.models import RunState
 from bug_fixer.publication import (
+    PublicationError,
+    build_publication_commit,
     create_draft_pr,
     push_candidate_branch,
+    sync_publication_artifacts,
     verify_publication_artifacts,
+    verify_publication_destination,
 )
+from bug_fixer.reporting import render_review_claims
 from bug_fixer.state_machine import BugFixerWorkflow
 from bug_fixer.verification import (
     check_publication_eligibility,
@@ -165,9 +176,11 @@ def main() -> None:
     # publish
     pub_p = subparsers.add_parser("publish", help="Publish verified patch as draft PR")
     pub_p.add_argument("--run", required=True, help="Run ID to publish")
-    pub_p.add_argument("--reviewer", required=True, help="GitHub username required to review PR")
+    pub_p.add_argument("--reviewer", default=None, help="GitHub username required to review PR")
     pub_p.add_argument("--remote", default="origin", help="Git remote name or URL")
     pub_p.add_argument("--confirm-remote", action="store_true", help="Explicit confirmation to push to remote")
+    pub_p.add_argument("--source", default=None, help="Source repository root (optional)")
+    pub_p.add_argument("--runner", choices=["docker", "local"], default="docker", help="Execution runner")
 
     # show
     show_p = subparsers.add_parser("show", help="Inspect run details, evidence, and publication eligibility")
@@ -179,6 +192,13 @@ def main() -> None:
     ver_p.add_argument("--run", required=True, help="Run ID to verify")
     ver_p.add_argument("--source", default=None, help="Source repository root (optional)")
     ver_p.add_argument("--runner", choices=["docker", "local"], default="docker", help="Execution runner")
+
+    # challenge
+    chal_p = subparsers.add_parser("challenge", help="Run generalization patch challenge across callers and input variations")
+    chal_p.add_argument("--run", required=True, help="Run ID to challenge")
+    chal_p.add_argument("--source", default=None, help="Source repository root (optional)")
+    chal_p.add_argument("--runner", choices=["docker", "local"], default="docker", help="Execution runner")
+    chal_p.add_argument("--json", action="store_true", help="Output challenge results as JSON")
 
     args = parser.parse_args()
     settings = Settings.from_env()
@@ -278,6 +298,9 @@ def main() -> None:
         rep_file = art_dir / "report.json"
         rep_data = json.loads(rep_file.read_text(encoding="utf-8")) if rep_file.is_file() else {}
 
+        chal_file = art_dir / "challenge.json"
+        chal_data = json.loads(chal_file.read_text(encoding="utf-8")) if chal_file.is_file() else None
+
         if args.json:
             out = {
                 "run_id": run_rec.run_id,
@@ -294,6 +317,16 @@ def main() -> None:
                 "manifest_errors": manifest_errs,
                 "eligible_for_publication": eligible,
                 "disqualifications": reasons,
+                "verified_tree_id": run_rec.verified_tree_id,
+                "publication_commit_sha": run_rec.publication_commit_sha,
+                "branch_name": run_rec.branch_name,
+                "pr_number": run_rec.pr_number,
+                "pr_url": run_rec.pr_url,
+                "publication_mode": run_rec.publication_mode,
+                "reviewer": run_rec.reviewer,
+                "reviewer_status": run_rec.reviewer_status,
+                "branch_protection": run_rec.branch_protection,
+                "challenge": chal_data,
                 "report": rep_data,
             }
             print(json.dumps(out, indent=2))
@@ -312,6 +345,7 @@ def main() -> None:
         print(f"Locked Test:       {run_rec.reproducer_nodeid}")
         print(f"Reproducer SHA256: {run_rec.reproducer_hash}")
         print(f"Patch SHA256:      {run_rec.candidate_patch_hash or 'None'}")
+        print(f"Verified Tree ID:  {run_rec.verified_tree_id or 'None'}")
         print(f"Artifacts Dir:     {art_dir}")
         print(f"Manifest Status:   {'[PASS] Intact' if manifest_ok else '[FAIL] Missing or tampered (' + '; '.join(manifest_errs) + ')'}")
         print(f"Eligibility Gate:  {'[ELIGIBLE]' if eligible else '[INELIGIBLE]'}")
@@ -319,13 +353,32 @@ def main() -> None:
             print("Disqualifications:")
             for r in reasons:
                 print(f"  - {r}")
+        if chal_data:
+            print("\nPatch Challenge Info:")
+            print(f"  Status:             {chal_data.get('status', 'N/A').upper()} ({chal_data.get('details', '')})")
+            print(f"  Tree Immutability:  {'PASSED' if chal_data.get('tree_intact') else 'FAILED'}")
+            if chal_data.get("strongest_survived_challenge"):
+                print(f"  Strongest Challenge: {chal_data.get('strongest_survived_challenge')}")
+            if chal_data.get("distinguishing_checks"):
+                print(f"  Distinguishing Tests: {', '.join(chal_data['distinguishing_checks'])}")
         if run_rec.stage == RunState.PUBLISHED:
+            claims = render_review_claims(
+                reviewer=run_rec.reviewer,
+                reviewer_status=run_rec.reviewer_status,
+                publication_mode=run_rec.publication_mode,
+                branch_protection=run_rec.branch_protection,
+                is_published=True,
+            )
             print("\nPublication Info:")
-            print(f"  Mode:            {run_rec.publication_mode or 'N/A'}")
-            print(f"  Branch:          {run_rec.branch_name}")
-            print(f"  PR URL:          {run_rec.pr_url}")
-            print(f"  Reviewer Status: {run_rec.reviewer_status}")
-            print(f"  Branch Protection: {run_rec.branch_protection}")
+            print(f"  Mode:               {run_rec.publication_mode or 'N/A'}")
+            print(f"  Branch:             {run_rec.branch_name}")
+            print(f"  Publication Commit: {run_rec.publication_commit_sha or 'N/A'}")
+            print(f"  Verified Tree ID:   {run_rec.verified_tree_id or 'N/A'}")
+            print(f"  PR URL:             {run_rec.pr_url}")
+            print(f"  Reviewer:           {run_rec.reviewer or 'None'}")
+            print(f"  Reviewer Status:    {run_rec.reviewer_status}")
+            print(f"  Branch Protection:  {run_rec.branch_protection}")
+            print(f"  Review Enforcement: {claims['summary_text']}")
         sys.exit(0)
 
     elif args.command == "verify":
@@ -355,11 +408,40 @@ def main() -> None:
                 print(f"  - {d}")
         sys.exit(0 if eligible else 1)
 
+    elif args.command == "challenge":
+        store = EvidenceStore(settings.data_dir / "bug_fixer.db", settings.data_dir / "artifacts")
+        source_p = Path(args.source).resolve() if args.source else None
+        print(f"Running generalization patch challenge for run: {args.run}...")
+        try:
+            ok, summary = run_patch_challenge(
+                args.run,
+                store,
+                settings,
+                source_repo=source_p,
+                runner=args.runner,
+            )
+        except Exception as e:
+            print(f"Error executing patch challenge: {e}")
+            sys.exit(1)
+
+        if args.json:
+            print(summary.model_dump_json(indent=2))
+        else:
+            print(format_challenge_table(summary))
+
+        sys.exit(0 if ok else 1)
+
     elif args.command == "publish":
         store = EvidenceStore(settings.data_dir / "bug_fixer.db", settings.data_dir / "artifacts")
         run_rec = store.get_run(args.run)
         if not run_rec:
             print(f"Error: Run '{args.run}' not found in database.")
+            sys.exit(1)
+
+        # 0. Destination verification check before any remote write
+        dest_ok, dest_msg = verify_publication_destination(args.remote, run_rec)
+        if not dest_ok:
+            print(f"Error: {dest_msg}")
             sys.exit(1)
 
         # Authoritative eligibility check
@@ -388,39 +470,130 @@ def main() -> None:
                 print(f"  - {r}")
             sys.exit(1)
 
-        branch_name = f"bug-fixer/run-{run_rec.run_id[:8]}"
-        workspace_dir = settings.data_dir / "runs" / run_rec.run_id / "workspace"
+        # 1. Locate source repository
+        source_repo: Path | None = None
+        if args.source:
+            source_repo = Path(args.source).resolve()
+        else:
+            ws_git = settings.data_dir / "runs" / run_rec.run_id / "workspace"
+            if (ws_git / ".git").is_dir():
+                source_repo = ws_git
+            else:
+                default_fix = Path(__file__).resolve().parent.parent / "fixtures" / "cross_file_repo"
+                if default_fix.is_dir():
+                    source_repo = default_fix
 
-        # Check safety guard for real remote
-        is_remote_url = "github.com" in args.remote or (args.remote.startswith("http") and not args.remote.startswith("file"))
-        if is_remote_url and not args.confirm_remote:
-            print(f"CONFIRMATION REQUIRED: About to push to remote '{args.remote}'.")
-            print("To proceed, add the flag: --confirm-remote")
+        if not source_repo or not source_repo.is_dir():
+            print(f"Error: Could not locate source repository for run '{args.run}'.")
             sys.exit(1)
 
-        print(f"Pushing branch '{branch_name}' to '{args.remote}'...")
-        push_candidate_branch(workspace_dir, args.remote, branch_name)
+        # 2. Check candidate tree identity from independent Docker replay
+        if not run_rec.verified_tree_id:
+            print("Run lacks verified candidate tree identity. Replaying verification in Docker...")
+            ver_ok, ver_rep = verify_run(
+                run_rec.run_id,
+                store,
+                settings,
+                source_repo=source_repo,
+                runner=args.runner,
+            )
+            if not ver_ok:
+                print(f"Error: Replay verification failed: {ver_rep.get('disqualifications')}")
+                sys.exit(1)
+            run_rec = store.get_run(run_rec.run_id)
 
-        # Read pr-body.md
+        # 3. Build publication commit in a fresh disposable checkout of base_sha
+        branch_name = f"bug-fixer/{run_rec.run_id}"
+        commit_msg = f"fix: resolve issue #{run_rec.issue_number} ({run_rec.run_id})\n\nCandidate patch verified by Bug Fixer."
+
+        with tempfile.TemporaryDirectory() as tmp_pub_dir:
+            tmp_checkout = Path(tmp_pub_dir) / "disposable_pub"
+            try:
+                pub_commit_sha, pub_tree_sha, _ = build_publication_commit(
+                    source_repo=source_repo,
+                    base_sha=run_rec.base_sha,
+                    patch_text=patch_text,
+                    commit_message=commit_msg,
+                    target_dir=tmp_checkout,
+                )
+            except PublicationError as e:
+                print(f"Error building publication commit: {e}")
+                sys.exit(1)
+
+            # 4. Immediately before pushing, verify parent and tree against evidence
+            if run_rec.verified_tree_id and pub_tree_sha != run_rec.verified_tree_id:
+                print(f"Error: Publication commit tree ({pub_tree_sha}) does not match verified Docker replay tree ({run_rec.verified_tree_id}). Aborting publication.")
+                sys.exit(1)
+
+            # 5. Persist expected publication commit BEFORE pushing
+            run_rec.publication_commit_sha = pub_commit_sha
+            run_rec.branch_name = branch_name
+            store.save_run(run_rec)
+
+            # 6. Check safety guard for real remote
+            remote_path = Path(args.remote)
+            remote_target = str(remote_path.resolve()) if remote_path.exists() else args.remote
+
+            is_remote_url = "github.com" in args.remote or (args.remote.startswith("http") and not args.remote.startswith("file"))
+            if is_remote_url and not args.confirm_remote:
+                print(f"CONFIRMATION REQUIRED: About to push to remote '{args.remote}'.")
+                print("To proceed, add the flag: --confirm-remote")
+                sys.exit(1)
+
+            print(f"Pushing branch '{branch_name}' (commit {pub_commit_sha[:8]}) to '{args.remote}'...")
+            try:
+                push_candidate_branch(tmp_checkout, remote_target, branch_name, expected_commit_sha=pub_commit_sha)
+            except PublicationError as e:
+                print(f"Error during push: {e}")
+                sys.exit(1)
+
+        # 7. Query remote head tree to compare with verified tree
+        remote_tree_id = pub_tree_sha
+        try:
+            ls_proc = subprocess.run(
+                ["git", "ls-remote", str(remote_target), f"refs/heads/{branch_name}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if ls_proc.returncode == 0 and ls_proc.stdout.strip():
+                remote_commit = ls_proc.stdout.split()[0].strip()
+                parse_proc = subprocess.run(
+                    ["git", "--git-dir", str(remote_target), "rev-parse", f"{remote_commit}^{{tree}}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if parse_proc.returncode == 0 and parse_proc.stdout.strip():
+                    remote_tree_id = parse_proc.stdout.strip()
+        except Exception:
+            pass
+
+        # 8. Draft PR creation or local simulation
         pr_body_file = settings.data_dir / "artifacts" / run_rec.run_id / "pr-body.md"
         body = pr_body_file.read_text(encoding="utf-8") if pr_body_file.is_file() else "Automated repair"
 
         token = os.environ.get("GITHUB_TOKEN")
-        pr_info = create_draft_pr(
-            owner=run_rec.repo_owner,
-            repo=run_rec.repo_name,
-            branch_name=branch_name,
-            base_branch=run_rec.base_branch or "main",
-            title=f"fix: resolve issue #{run_rec.issue_number}",
-            body=body,
-            reviewer=args.reviewer,
-            api_token=token,
-            local_record_dir=settings.data_dir / "artifacts" / run_rec.run_id,
-        )
+        try:
+            pr_info = create_draft_pr(
+                owner=run_rec.repo_owner,
+                repo=run_rec.repo_name,
+                branch_name=branch_name,
+                base_branch=run_rec.base_branch or "main",
+                title=f"fix: resolve issue #{run_rec.issue_number}",
+                body=body,
+                reviewer=args.reviewer or "",
+                api_token=token,
+                local_record_dir=settings.data_dir / "artifacts" / run_rec.run_id,
+            )
+        except PublicationError as e:
+            print(f"Error creating draft PR: {e}")
+            sys.exit(1)
 
         run_rec.reviewer = args.reviewer
         run_rec.reviewer_status = pr_info.get("reviewer_status")
         run_rec.branch_name = branch_name
+        run_rec.pr_number = pr_info.get("pr_number")
         run_rec.pr_url = pr_info.get("pr_url")
         run_rec.branch_protection = pr_info.get("branch_protection")
         run_rec.publication_mode = pr_info.get("publication_mode")
@@ -428,14 +601,19 @@ def main() -> None:
         run_rec.status = "published"
         store.save_run(run_rec)
 
+        # 9. Sync report.json, pr-body.md, and manifest.json
+        sync_publication_artifacts(settings.data_dir / "artifacts", store, run_rec)
+
         print("\n================ PUBLISHED DRAFT PR ================")
-        print(f"Publication Mode:  {pr_info.get('publication_mode')}")
-        print(f"PR Location:       {pr_info.get('pr_url')}")
-        print(f"Branch:            {branch_name}")
-        print(f"Draft Status:      True")
-        print(f"Reviewer Required: @{args.reviewer} ({pr_info.get('reviewer_status')})")
-        print(f"Branch Protection: {pr_info.get('branch_protection')}")
-        print("Automatic merge is disabled. Approving human review required before merge.")
+        print(f"Publication Mode:      {pr_info.get('publication_mode')}")
+        print(f"PR Location:           {pr_info.get('pr_url')}")
+        print(f"Branch:                {branch_name}")
+        print(f"Publication Commit:    {run_rec.publication_commit_sha}")
+        print(f"Verified Tree ID:      {run_rec.verified_tree_id}")
+        print(f"Remote Head Tree ID:   {remote_tree_id}")
+        print(f"Draft Status:          True")
+        print(f"Reviewer Required:     {('@' + args.reviewer) if args.reviewer else 'None'} ({pr_info.get('reviewer_status')})")
+        print(f"Branch Protection:     {pr_info.get('branch_protection')}")
         sys.exit(0)
 
 

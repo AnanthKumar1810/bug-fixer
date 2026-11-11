@@ -264,13 +264,14 @@ def test_scenario_8_simulated_publication_produces_local_evidence_only(tmp_path:
     assert pr_result["pr_number"] is None
     assert "github.com" not in pr_result["pr_url"]
     assert pr_result["reviewer_status"] == "not_requested"
-    assert pr_result["branch_protection"] == "not_required"
+    assert pr_result["branch_protection"] == "not_applicable"
     assert (local_rec_dir / "local_draft_pr.json").is_file()
 
     rec_data = json.loads((local_rec_dir / "local_draft_pr.json").read_text(encoding="utf-8"))
     assert rec_data["publication_mode"] == "simulated_local"
     assert rec_data["required_reviewer"] == "senior-engineer"
     assert rec_data["reviewer_status"] == "not_requested"
+    assert rec_data["branch_protection"] == "not_applicable"
 
 
 # SCENARIO 9: Partial live publication retry creates exactly 1 PR (idempotency)

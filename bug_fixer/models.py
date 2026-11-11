@@ -104,6 +104,7 @@ class RunManifest(BaseModel):
     base_sha: str
     provenance: str
     created_at: str
+    candidate_tree_id: str | None = None
     files: dict[str, ManifestEntry] = Field(default_factory=dict)
 
 
@@ -128,8 +129,11 @@ class RunRecord(BaseModel):
     reviewer: str | None = None
     reviewer_status: str | None = None  # "requested", "failed", "not_requested"
     branch_name: str | None = None
+    pr_number: int | None = None
     pr_url: str | None = None
-    branch_protection: str | None = None  # "verified_required", "not_required", "unknown"
+    branch_protection: str | None = None  # "verified_required", "not_required", "unknown", "not_applicable"
     publication_mode: str | None = None  # "simulated_local", "published_github"
+    verified_tree_id: str | None = None
+    publication_commit_sha: str | None = None
     manifest_hash: str | None = None
     error_detail: str | None = None
