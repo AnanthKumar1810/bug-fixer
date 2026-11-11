@@ -19,31 +19,43 @@ python -m pytest -q
 
 ---
 
-## 2-Minute Judge Walkthrough
+## 3-Minute Judge Walkthrough
 
-### 1. Inspect the Real-Repository Repair Run (7-Part Judge Decision Trace)
+### 1. Inspect the Corrected Real-Repository Repair (7-Part Judge Decision Trace)
+```powershell
+python -m bug_fixer.cli show --run run_909759fa3e22
+```
+Outputs the complete chain of custody for public repository `AnanthKumar1810/ml-code-review-assistant`:
+1. **Issue**: URL, base commit `6ffa5b7e9b60`, and provenance.
+2. **Failing Test**: Locked reproducer `test_ap002_precision_and_recall` and failure assertions on negative false positives.
+3. **Source Excerpt**: Target callee `src/patterns.py` (lines 1-50) delivered to Qwen with SHA-256 fingerprint.
+4. **Candidate Diff**: Targeted unified diff properly grouping alternatives `(\[\]|\{\})` in `src/patterns.py`.
+5. **Clean Replay & Validation**: Docker suite pass (12/12), manifest integrity, and patch challenge survival.
+6. **Review Status**: Truthful publication mode (`simulated_local`), publication commit `e9b807f8`, and `not_requested` reviewer status.
+7. **Judge Decision Trace**: Complete 5-point decision narrative (Observed Failure -> Next Action -> Evidence Returned -> State Carried Forward -> Outcome).
+
+### 2. Inspect the Initial Attempt with the False-Positive Flaw
 ```powershell
 python -m bug_fixer.cli show --run run_21c66b738258
 ```
-Outputs the complete chain of custody for public repository `AnanthKumar1810/ml-code-review-assistant`:
-1. **Issue**: URL, base commit `5f13700f3786`, and provenance.
-2. **Failing Test**: Locked reproducer `test_detect_mutable_default_dict` and failure assertion.
-3. **Source Excerpt**: Target callee `src/patterns.py` (lines 1-50) delivered to Qwen with SHA-256 fingerprint.
-4. **Candidate Diff**: Targeted unified diff modifying only `src/patterns.py` to match both `[]` and `{}`.
-5. **Clean Replay & Validation**: Docker suite pass, manifest integrity, and patch challenge survival.
-6. **Review Status**: Truthful publication mode (`simulated_local`), publication commit `323e458f`, and `not_requested` reviewer status.
-7. **Judge Decision Trace**: Complete 5-point decision narrative (Observed Failure -> Next Action -> Evidence Returned -> State Carried Forward -> Outcome).
+Shows the first attempt where Qwen generated un-grouped regex `\[\]|\{\}`, introducing false positives on valid dict assignments.
 
-### 2. Independent Docker Replay
-Replay clean-checkout validation in Docker from scratch:
+### 3. Independent Docker Replay
+Replay clean-checkout validation in Docker from scratch on the corrected repair:
 ```powershell
-python -m bug_fixer.cli verify --run run_21c66b738258 --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
+python -m bug_fixer.cli verify --run run_909759fa3e22 --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
 ```
 
-### 3. Generalization Patch Challenge
-Challenge candidate patch against input variations across multi-signature defaults:
+### 4. Generalization Patch Challenge
+Challenge candidate patch against multi-parameter input variations and negative controls:
 ```powershell
-python -m bug_fixer.cli challenge --run run_21c66b738258 --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
+python -m bug_fixer.cli challenge --run run_909759fa3e22 --source .bug-fixer-data/demo_repo/ml-code-review-assistant --runner docker
+```
+
+### 5. Evaluate the 7-Case Precision & Recall Matrix
+Compare the detector across Pinned Base, 1st Showcase Patch, and Corrected Patch:
+```powershell
+python .bug-fixer-data/test_evaluation_matrix.py
 ```
 
 ### 4. Cross-File Fixture & Caller Workaround Demonstration

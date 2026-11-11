@@ -76,6 +76,15 @@ def test_mutable_default_variations():
         findings = heuristic_scan(c)
         ids = [f['id'] for f in findings]
         assert 'AP002' in ids, f'AP002 must detect mutable defaults in: {c}'
+
+    negatives = [
+        "cache = {}",
+        "def get_empty(): return {}",
+    ]
+    for n in negatives:
+        findings = heuristic_scan(n)
+        ids = [f['id'] for f in findings]
+        assert 'AP002' not in ids, f'AP002 false positive on valid code: {n}'
 """
 
 
