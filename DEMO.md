@@ -13,8 +13,11 @@ In `src/patterns.py`, the heuristic scanner rule `AP002` ("Mutable default argum
 
 ### 3-Minute Verification Runbook:
 ```powershell
-# Step 1: One-Command Three-State Complete PR Docker Verification
+# Step 1: One-Command Three-State Complete PR Docker Verification (Exit Code 0)
 python -m bug_fixer.cli verify --release-dir .bug-fixer-data/release_artifacts/ml-code-review-assistant-ap002
+
+# Step 1b: Negative Control Rejection: Unrelated Exception Detection (Exit Code 1)
+python -m bug_fixer.cli verify --release-dir .bug-fixer-data/release_artifacts/ml-code-review-assistant-neg-unrelated
 
 # Step 2: Inspect the 7-Part Judge Decision Trace
 python -m bug_fixer.cli show --run run_5cdd92182ddc
@@ -25,8 +28,11 @@ python -m bug_fixer.cli verify --run run_5cdd92182ddc --source .bug-fixer-data/d
 # Step 4: Run the generalization patch challenge
 python -m bug_fixer.cli challenge --run run_5cdd92182ddc --source .bug-fixer-data/demo_repo/ml-code-review-assistant
 
-# Step 5: Test negative controls & corrupted artifact rejection
+# Step 5: Test negative controls & red-state unit tests (8 tests pass)
 python -m pytest tests/test_complete_pr_verification.py -v
+
+# Step 6: Full automated test suite across all 17 test modules (72 tests pass)
+python -m pytest tests/ -v
 ```
 
 ### The Clean 1-Line Production Diff:
