@@ -250,12 +250,33 @@ def test_console_html_rendering_and_text_safety(client: TestClient) -> None:
     assert "view-demo" in html_text
     assert "view-runs" in html_text
     assert "view-benchmarks" in html_text
+    assert "view-infographic" in html_text
     assert "view-studio" in html_text
 
     # Typography & Navigation
     assert "Inter" in html_text
     assert "JetBrains Mono" in html_text
     assert "Bug Fixer Operations Console" in html_text
+    assert "/infographic" in html_text
 
     # Read-only demo mode banner
     assert "Read-Only Judge Demo Mode" in html_text
+
+
+def test_infographic_endpoints(client: TestClient) -> None:
+    """Verify that 16:9 architecture infographic HTML and raw SVG endpoints function correctly."""
+    # 1. HTML presentation viewer
+    resp_html = client.get("/infographic")
+    assert resp_html.status_code == 200
+    assert "text/html" in resp_html.headers.get("content-type", "")
+    assert "Bug Fixer — From Issue to Verified Repair" in resp_html.text
+    assert "A passing patch becomes eligible for review. A human decides whether to merge." in resp_html.text
+    assert "<svg" in resp_html.text
+
+    # 2. Raw SVG asset
+    resp_svg = client.get("/infographic.svg")
+    assert resp_svg.status_code == 200
+    assert "image/svg+xml" in resp_svg.headers.get("content-type", "")
+    assert "<svg" in resp_svg.text
+    assert "</svg>" in resp_svg.text
+

@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 import httpx
 from pydantic import BaseModel, Field
 
@@ -874,6 +874,28 @@ def run_challenge_endpoint(req: ChallengeRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 16:9 Architecture Infographic (Presentation Slide & Vector SVG)
+# ---------------------------------------------------------------------------
+
+@app.get("/infographic", response_class=HTMLResponse)
+def get_infographic_page() -> str:
+    """Professional 16:9 architecture infographic HTML viewer."""
+    doc_path = Path(__file__).resolve().parent.parent / "docs" / "architecture_infographic.html"
+    if doc_path.is_file():
+        return doc_path.read_text(encoding="utf-8")
+    raise HTTPException(status_code=404, detail="Architecture infographic HTML not found")
+
+
+@app.get("/infographic.svg")
+def get_infographic_svg() -> Response:
+    """Professional 16:9 architecture infographic raw SVG asset."""
+    svg_path = Path(__file__).resolve().parent.parent / "docs" / "architecture_infographic.svg"
+    if svg_path.is_file():
+        return Response(content=svg_path.read_text(encoding="utf-8"), media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Architecture infographic SVG not found")
+
+
+# ---------------------------------------------------------------------------
 # Professional Operations Console UI
 # ---------------------------------------------------------------------------
 
@@ -1306,6 +1328,11 @@ def dashboard() -> str:
                 <span class="pulse-dot" id="health-dot"></span>
                 <span id="health-label">Checking services...</span>
             </div>
+            <a href="/infographic" target="_blank" style="text-decoration: none;">
+                <div class="telemetry-chip" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">
+                    <span>🗺️ Architecture (16:9) &rarr;</span>
+                </div>
+            </a>
             <a href="https://github.com/AnanthKumar1810/bug-fixer" target="_blank" style="text-decoration: none;">
                 <div class="telemetry-chip" style="color: var(--cyan);">
                     <span>GitHub Repo &rarr;</span>
@@ -1325,6 +1352,9 @@ def dashboard() -> str:
             </button>
             <button class="tab-btn" id="tab-benchmarks" onclick="switchView('benchmarks')">
                 <span>📊 Empirical Benchmarks</span>
+            </button>
+            <button class="tab-btn" id="tab-infographic" onclick="switchView('infographic')">
+                <span>🗺️ Architecture Infographic</span>
             </button>
             <button class="tab-btn" id="tab-studio" onclick="switchView('studio')">
                 <span>⚙️ Live Operations Studio</span>
@@ -1546,7 +1576,32 @@ def dashboard() -> str:
         </div>
 
         <!-- ============================================================== -->
-        <!-- VIEW 4: LIVE OPERATIONS STUDIO -->
+        <!-- VIEW 4: ARCHITECTURE INFOGRAPHIC (16:9 PRESENTATION) -->
+        <!-- ============================================================== -->
+        <div id="view-infographic" style="display: none;">
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-title">System Architecture & Verification Protocol (16:9 Slide)</div>
+                        <div class="panel-desc">Auditable end-to-end repair pipeline: Issue intake, reproduction gate, model repair, independent replay, and gated human publication.</div>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <a href="/infographic" target="_blank" class="btn btn-secondary" style="text-decoration: none;">
+                            <span>⛶ Open Presentation Slide</span>
+                        </a>
+                        <a href="/infographic.svg" download="bug_fixer_architecture_infographic.svg" class="btn" style="background: #0d9488; text-decoration: none;">
+                            <span>📥 Download Vector SVG</span>
+                        </a>
+                    </div>
+                </div>
+                <div style="background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4); aspect-ratio: 16 / 9; width: 100%;">
+                    <iframe src="/infographic" style="width: 100%; height: 100%; border: none;"></iframe>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- VIEW 5: LIVE OPERATIONS STUDIO -->
         <!-- ============================================================== -->
         <div id="view-studio" style="display: none;">
             <div class="panel">
@@ -1672,7 +1727,7 @@ def dashboard() -> str:
 
         // Tab View Switcher
         function switchView(viewName) {{
-            ['demo', 'runs', 'benchmarks', 'studio'].forEach(v => {{
+            ['demo', 'runs', 'benchmarks', 'infographic', 'studio'].forEach(v => {{
                 document.getElementById('view-' + v).style.display = (v === viewName) ? 'block' : 'none';
                 document.getElementById('tab-' + v).classList.toggle('active', v === viewName);
             }});

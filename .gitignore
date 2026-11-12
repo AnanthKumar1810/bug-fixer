@@ -26,3 +26,5 @@ htmlcov/
 .bug-fixer-data/
 *.db
 *.log
+agentforge/
+
