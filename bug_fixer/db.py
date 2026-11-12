@@ -355,3 +355,16 @@ class EvidenceStore:
                         f"Artifact hash mismatch for {rel_name}: expected {entry.sha256[:12]}..., got {actual_hash[:12]}..."
                     )
         return len(errors) == 0, errors
+
+    def get_events(self, run_id: str) -> list[EventRecord]:
+        """Alias for list_events."""
+        return self.list_events(run_id)
+
+    def get_artifacts_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """List all artifact records recorded for a run."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT artifact_hash, artifact_type, file_path, byte_size, created_at FROM artifacts WHERE run_id = ? ORDER BY created_at ASC",
+                (run_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]

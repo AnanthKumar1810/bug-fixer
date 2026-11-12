@@ -5,9 +5,18 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_docker_integration:
+        description: 'Run full Docker container validator integration test'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
-  test:
+  # Fast unit test job running on every commit & PR
+  unit-tests:
+    name: Fast Verification Suite (Python 3.13)
     runs-on: ubuntu-latest
 
     steps:
@@ -22,8 +31,36 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -e .
-        pip install pytest anyio asyncio
+        pip install pytest anyio asyncio httpx
 
-    - name: Run verification test suite
+    - name: Run unit test suite
       run: |
         pytest tests/ -v -m "not docker"
+
+  # Container integration job (runs on manual dispatch or commit message tag [docker-ci])
+  docker-validator-integration:
+    name: Docker Validator Container Integration
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[docker-ci]')
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+        pip install pytest anyio asyncio httpx
+
+    - name: Build Validator Container Image
+      run: |
+        docker build -t bugfixer-validator:py313 validator/
+
+    - name: Run Docker Three-State Verification Tests
+      run: |
+        pytest tests/test_complete_pr_verification.py -v

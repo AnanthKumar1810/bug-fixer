@@ -13,9 +13,45 @@ pip install -e .
 # 2. Check dependencies and runtime readiness
 python -m bug_fixer.cli doctor
 
-# 3. Run complete verification test suite (72 tests)
+# 3. Run complete verification test suite (84 tests)
 python -m pytest tests -q
 ```
+
+---
+
+## Bug Fixer Operations Console & Judge Demo Mode
+
+A professional, enterprise-grade operations console and judge verification interface is available locally:
+
+```powershell
+# Launch the web operations console
+python -m uvicorn bug_fixer.api:app --host 127.0.0.1 --port 8000
+```
+Open **`http://127.0.0.1:8000`** in your web browser.
+
+> [!NOTE]
+> `http://127.0.0.1:8000` is a local-only address. The console runs locally on your workstation without external dependencies.
+
+### Key Console Capabilities:
+1. **System Health Header**:
+   - Live non-blocking health monitoring of the API process, Docker daemon, container validator image (`bugfixer-validator:py313`), and local Ollama model (`qwen2.5-coder:7b`).
+   - Graceful partial failure handling (individual service outages are clearly flagged with concise diagnostic reasons).
+2. **Read-Only Judge Demo Mode** (`/api/demo/{case_id}`):
+   - Opens by default so judges can immediately inspect recorded repairs without triggering local model inference, Docker jobs, file edits, or git writes.
+   - **Case 1: Genuine Upstream Defect** (`run_5cdd92182ddc`): The AP002 immutable tuple repair on `ml-code-review-assistant`. Inspect the 8-stage repair timeline, 1-line surgical diff, 12/12 passing Docker test suite, and clean byte-for-byte replay proof.
+   - **Case 2: Honest Failure Reporting** (`run_29614918c993`): Demonstrates system behavior when model proposals fail verification across the retry budget (2/2 attempts), halting cleanly without false claims.
+   - **Case 3: Defense-in-Depth Gate** (`neg-unrelated`): Proves the SWE-bench verifier rejects candidate packages failing on unrelated crashes (`ZeroDivisionError`) or collection errors.
+3. **Runs & Detail Inspector**:
+   - Filterable, searchable table of all historical runs from SQLite WAL storage.
+   - 8-stage timeline sequence with timestamps, events, inputs/outputs refs, tool actions, and evidence.
+   - Syntax-highlighted unified diff viewer with line numbers and copyable SHA-256 fingerprints.
+   - Validation & replay evidence cards (Reproduction signature, Candidate test results, Clean-checkout replay, Patch challenge).
+   - Truthful publication badges (`Local Rehearsal (Simulated)` vs real GitHub PRs).
+4. **Empirical Benchmarks View**:
+   - Interactive tables for Evaluation Set 2 (Paired dynamic retrieval vs naive baseline), Evaluation Set 3 (Sprint B vs Sprint C), and real-world Python packages (`boltons` 6.5k★, `more-itertools` 3.4k★).
+5. **Interactive Repair Studio**:
+   - Guarded by explicit operator confirmation before launching active inference or container jobs.
+   - Presets for Greeting Service (`cross_file_repo`), Config Loader (`config_loader_repo`), Math Clamp (`math_clamp_repo`), and arbitrary custom repositories.
 
 ---
 
